@@ -1,6 +1,6 @@
-# 🎙️ MeetSaransh — Meeting Summarizer
+# 🎙️ MeetSaransh - Meeting Summarizer
 
-Transcribe meeting audio and generate **action-oriented** summaries — a clean transcript,
+Transcribe meeting audio and generate **action-oriented** summaries a clean transcript,
 a layered summary, and a table of action items with owners, due dates, and timestamps
 that jump back to the exact moment in the recording.
 
@@ -12,7 +12,7 @@ that jump back to the exact moment in the recording.
 
 ## Why this is scoped the way it is
 
-The assignment asks for one thing done well: **audio → transcript → summary + action items**,
+The assignment asks for one thing done well: **audio -> transcript -> summary + action items**,
 graded on _transcription accuracy, summary quality, LLM prompt effectiveness, and code
 structure_. The submission guidelines add a hard constraint: **"keep dependencies minimal
 and native whenever possible."**
@@ -53,7 +53,7 @@ python -m venv .venv
 # source .venv/bin/activate       # macOS/Linux
 pip install -r requirements.txt
 
-# 2. Add your key (optional — skip to run in sample-only mode)
+# 2. Add your key (optional - skip to run in sample-only mode)
 copy .env.example .env            # Windows   (cp on macOS/Linux)
 # then paste your key into GROQ_API_KEY=...
 
@@ -83,7 +83,7 @@ or upload your own audio once a key is set.
 Browser (vanilla HTML/JS, no build step)
         │  fetch()
         ▼
-FastAPI (app/main.py)  ── routes, upload validation, Markdown export
+FastAPI (app/main.py) - routes, upload validation, Markdown export
         │
         ├── app/transcription.py  → Groq Whisper  (ASR, segment timestamps)
         ├── app/summarize.py      → Groq Llama    (structured JSON summary)
@@ -129,7 +129,7 @@ Each choice below was made by asking "what does the assignment actually reward?"
 
 - **Python + FastAPI + vanilla JS, no frontend framework.** ASR and the LLM are just HTTP
   calls, so a heavy SPA earns nothing. A framework-free frontend means **zero `node_modules`
-  and no build artifacts** — exactly what the guidelines ask for.
+  and no build artifacts** - exactly what the guidelines ask for.
 - **SQLite via the standard library, not a hosted DB or an ORM.** Satisfies "backend to
   store & process data" with a real relational store, zero extra dependencies, and no
   external service to stand up. Trade-off: single-writer, not built for high concurrency —
@@ -161,12 +161,12 @@ Each choice below was made by asking "what does the assignment actually reward?"
 
 ## Roadmap
 
-Deferred on purpose — out of scope for the graded criteria and/or the "minimal dependencies"
+Deferred on purpose - out of scope for the graded criteria and/or the "minimal dependencies"
 guideline, but the natural next steps:
 
-- **Cross-meeting RAG chat** — "what did we decide about pricing?" across all meetings. Can
+- **Cross-meeting RAG chat** - "what did we decide about pricing?" across all meetings. Can
   be built lean (an embeddings API + a numpy/SQLite vector store) without a hosted vector DB.
-- **Speaker diarization** — label "Speaker 1 → Priya". High perceived-quality gain; costs a
+- **Speaker diarization** - label "Speaker 1 -> Priya". High perceived-quality gain; costs a
   heavy model dependency, so deferred.
 - **Async transcription queue** with progress + retry-with-backoff on 429s.
 - **Long-audio chunking** with overlap to exceed the 25 MB single-file cap.
