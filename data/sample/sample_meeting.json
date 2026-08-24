@@ -1,0 +1,45 @@
+{
+  "title": "Q3 Mobile App Planning Sync",
+  "segments": [
+    {"start": 0.0, "end": 9.0, "text": "Alright, thanks everyone for joining. Agenda today is three things: the Q3 release scope, the payment bug from last week, and hiring. Let's start with scope."},
+    {"start": 9.0, "end": 22.0, "text": "So for Q3 the big items are offline mode, the redesigned onboarding, and push notifications. My worry is we can't do all three well before the September freeze."},
+    {"start": 22.0, "end": 34.0, "text": "I agree. Offline mode is the one users keep asking for in reviews. I'd rather ship offline mode solid than ship all three half-done."},
+    {"start": 34.0, "end": 44.0, "text": "Okay, then let's make the call: offline mode and onboarding are in for Q3, push notifications moves to Q4. Everyone good with that?"},
+    {"start": 44.0, "end": 48.0, "text": "Works for me. That takes the pressure off the backend team too."},
+    {"start": 48.0, "end": 60.0, "text": "Good. Priya, can you update the roadmap doc to reflect push notifications slipping to Q4? And add a note on why, so support knows what to tell users."},
+    {"start": 60.0, "end": 64.0, "text": "Yep, I'll update the roadmap by end of day tomorrow."},
+    {"start": 64.0, "end": 78.0, "text": "Next, the payment bug. We had that report of double charges on Android. Rahul, where are we on it?"},
+    {"start": 78.0, "end": 92.0, "text": "We found the root cause. It's a retry that fires when the network drops mid-transaction, so the charge goes through twice. Fix is basically an idempotency key on the payment request."},
+    {"start": 92.0, "end": 101.0, "text": "How risky is that change? Payments is the last place I want a surprise."},
+    {"start": 101.0, "end": 114.0, "text": "Low risk if we test it properly. I'll have the fix in review by Thursday, and I want QA to run the full payment regression suite before it ships. No shortcuts on this one."},
+    {"start": 114.0, "end": 122.0, "text": "Agreed, full regression before release. Rahul, please also write up the incident so we have it documented for the postmortem."},
+    {"start": 122.0, "end": 126.0, "text": "Will do. I'll send the incident writeup by Friday."},
+    {"start": 126.0, "end": 138.0, "text": "Last thing, hiring. We're still short one mobile engineer. Do we have budget approved for the role or is that still open?"},
+    {"start": 138.0, "end": 148.0, "text": "That's still open actually. I need to confirm with finance whether the headcount carries over from Q2. I'm not certain, so let me check before we post the role."},
+    {"start": 148.0, "end": 158.0, "text": "Okay. Let's not post the job until that's confirmed. Meena, can you follow up with finance on the headcount this week?"},
+    {"start": 158.0, "end": 163.0, "text": "Sure, I'll reach out to finance and report back in next week's sync."},
+    {"start": 163.0, "end": 172.0, "text": "Great. So to recap: offline mode and onboarding for Q3, payment fix by Thursday with full regression, and we confirm hiring budget before posting. Thanks all."}
+  ],
+  "summary": {
+    "tldr": "The team locked Q3 scope to offline mode and redesigned onboarding, deferring push notifications to Q4 to avoid shipping three features half-done. The Android double-charge bug was root-caused to a network retry and will be fixed with an idempotency key, gated behind a full payment regression suite. Hiring for the open mobile engineer role is paused until finance confirms the headcount carries over from Q2.",
+    "key_decisions": [
+      {"decision": "Q3 scope is offline mode and redesigned onboarding; push notifications is deferred to Q4.", "timestamp": "00:34"},
+      {"decision": "The payment fix must pass the full payment regression suite before it ships.", "timestamp": "01:54"},
+      {"decision": "Do not post the open mobile engineer role until finance confirms the headcount.", "timestamp": "02:28"}
+    ],
+    "action_items": [
+      {"task": "Update the roadmap doc to move push notifications to Q4, with a note explaining why for the support team.", "owner": "Priya", "due": "End of day tomorrow", "timestamp": "00:48"},
+      {"task": "Put the payment idempotency-key fix up for review.", "owner": "Rahul", "due": "Thursday", "timestamp": "01:41"},
+      {"task": "Write up the payment incident for the postmortem.", "owner": "Rahul", "due": "Friday", "timestamp": "02:02"},
+      {"task": "Follow up with finance on whether the mobile engineer headcount carries over from Q2, and report back.", "owner": "Meena", "due": "This week / next sync", "timestamp": "02:28"}
+    ],
+    "open_questions": [
+      "Does the mobile engineer headcount carry over from Q2, or is new budget needed?"
+    ],
+    "topics": [
+      {"title": "Q3 release scope", "summary": "Debated fitting three features before the September freeze; chose depth over breadth by cutting push notifications.", "timestamp": "00:09"},
+      {"title": "Android payment double-charge bug", "summary": "Root cause is a retry firing on network drop; fix is an idempotency key, gated behind full regression testing.", "timestamp": "01:04"},
+      {"title": "Mobile engineering hiring", "summary": "One role still open; posting is blocked on finance confirming headcount carryover.", "timestamp": "02:06"}
+    ]
+  }
+}

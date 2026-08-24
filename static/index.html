@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MeetSaransh — Meeting Summarizer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎙️</span>
+      <div>
+        <h1>MeetSaransh</h1>
+        <p class="tag">Audio → transcript → action-oriented summary</p>
+      </div>
+    </div>
+    <div id="status-badge" class="badge badge-muted">checking…</div>
+  </header>
+
+  <main class="layout">
+    <!-- Left: upload + meeting list -->
+    <aside class="sidebar">
+      <section class="card">
+        <h2>New meeting</h2>
+        <label class="field">
+          <span>Title (optional)</span>
+          <input id="title-input" type="text" placeholder="e.g. Q3 Planning Sync" />
+        </label>
+        <label class="field">
+          <span>Audio file</span>
+          <input id="file-input" type="file"
+                 accept=".mp3,.wav,.m4a,.mp4,.mpeg,.mpga,.webm,.ogg,.flac" />
+        </label>
+        <button id="upload-btn" class="btn btn-primary">Transcribe &amp; summarize</button>
+        <button id="sample-btn" class="btn btn-ghost">Load sample meeting</button>
+        <p id="upload-hint" class="hint"></p>
+      </section>
+
+      <section class="card">
+        <h2>Meetings</h2>
+        <ul id="meeting-list" class="meeting-list"><li class="empty">No meetings yet.</li></ul>
+      </section>
+    </aside>
+
+    <!-- Right: detail -->
+    <section id="detail" class="detail">
+      <div id="empty-state" class="empty-state">
+        <p>👋 Upload a meeting audio file, or load the sample to see a summary.</p>
+      </div>
+
+      <article id="meeting-view" class="hidden">
+        <div class="detail-head">
+          <div>
+            <h2 id="mv-title"></h2>
+            <p id="mv-meta" class="meta"></p>
+          </div>
+          <div class="detail-actions">
+            <button id="export-btn" class="btn btn-ghost">Copy as Markdown</button>
+            <button id="delete-btn" class="btn btn-danger">Delete</button>
+          </div>
+        </div>
+
+        <audio id="audio-player" controls class="audio hidden"></audio>
+
+        <nav class="tabs">
+          <button class="tab tab-active" data-tab="summary">Summary</button>
+          <button class="tab" data-tab="transcript">Transcript</button>
+        </nav>
+
+        <div id="tab-summary" class="tab-panel">
+          <div id="tldr" class="block"></div>
+          <div id="decisions" class="block"></div>
+          <div id="actions" class="block"></div>
+          <div id="questions" class="block"></div>
+          <div id="topics" class="block"></div>
+        </div>
+
+        <div id="tab-transcript" class="tab-panel hidden">
+          <input id="transcript-search" class="search" type="text" placeholder="Search transcript…" />
+          <div id="transcript" class="transcript"></div>
+        </div>
+      </article>
+
+      <div id="loader" class="loader hidden">
+        <div class="spinner"></div>
+        <p id="loader-text">Transcribing &amp; summarizing… this can take a moment.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
