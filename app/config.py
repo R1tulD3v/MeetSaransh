@@ -16,7 +16,7 @@ GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
 
 ASR_MODEL: str = os.getenv("ASR_MODEL", "whisper-large-v3-turbo").strip()
-LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile").strip()
+LLM_MODEL: str = os.getenv("LLM_MODEL", "openai/gpt-oss-120b").strip()
 
 # --- RAG ("Ask your meetings") ---
 EMBED_MODEL: str = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5").strip()
