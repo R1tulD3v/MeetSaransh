@@ -69,6 +69,7 @@ async function loadHealth() {
 async function loadMeetings() {
   const list = $("#meeting-list");
   const meetings = await api("/api/meetings");
+  populateScope(meetings);
   list.innerHTML = "";
   if (!meetings.length) {
     list.appendChild(el("li", "empty", "No meetings yet."));
@@ -84,6 +85,18 @@ async function loadMeetings() {
     li.addEventListener("click", () => openMeeting(m.id));
     list.appendChild(li);
   }
+}
+
+function populateScope(meetings) {
+  const sel = $("#chat-scope");
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">All meetings</option>';
+  for (const m of meetings) {
+    const opt = el("option", null, m.title);
+    opt.value = m.id;
+    sel.appendChild(opt);
+  }
+  sel.value = prev;
 }
 
 // ------------------------------------------------------------------ open / render
@@ -104,6 +117,25 @@ function seekTo(seconds) {
   }
   audio.currentTime = seconds;
   audio.play().catch(() => {});
+}
+
+// Open a meeting from a citation and jump to the cited moment in the transcript.
+async function openMeetingAt(meetingId, seconds) {
+  switchView("meetings");
+  await openMeeting(meetingId);
+  switchTab("transcript");
+  const rows = [...document.querySelectorAll("#transcript .seg")];
+  // find the last segment whose start <= seconds
+  let target = rows[0];
+  for (const row of rows) {
+    if (Number(row.dataset.start) <= seconds) target = row; else break;
+  }
+  if (target) {
+    target.scrollIntoView({ block: "center" });
+    target.classList.add("seg-flash");
+    setTimeout(() => target.classList.remove("seg-flash"), 1600);
+  }
+  seekTo(seconds);
 }
 
 function tsChip(ts) {
@@ -230,6 +262,7 @@ function renderTranscript(segments) {
   }
   for (const seg of segments) {
     const row = el("div", "seg");
+    row.dataset.start = seg.start;
     const ts = el("div", "seg-ts", secondsToTs(seg.start));
     ts.addEventListener("click", () => seekTo(seg.start));
     const text = el("div", "seg-text", seg.text);
@@ -353,6 +386,95 @@ async function deleteMeeting() {
     toast(err.message, true);
   }
 }
+
+// ------------------------------------------------------------------ views + chat
+function switchView(view) {
+  document.querySelectorAll(".navbtn").forEach((b) =>
+    b.classList.toggle("navbtn-active", b.dataset.view === view));
+  $(".layout").classList.toggle("hidden", view !== "meetings");
+  $("#chat-view").classList.toggle("hidden", view !== "ask");
+  if (view === "ask") {
+    loadRagStatus();
+    $("#chat-q").focus();
+  }
+}
+document.querySelectorAll(".navbtn").forEach((b) =>
+  b.addEventListener("click", () => switchView(b.dataset.view)));
+
+async function loadRagStatus() {
+  try {
+    const s = await api("/api/rag/status");
+    const mode = s.embeddings_available ? "semantic + keyword" : "keyword-only";
+    $("#rag-status").textContent =
+      `${s.indexed_meetings} meeting(s) indexed · ${s.total_chunks} chunks · ${mode} search`;
+  } catch (_) {}
+}
+
+function addMsg(cls, buildInner) {
+  const box = $("#chat-messages");
+  const hint = box.querySelector(".chat-hint");
+  if (hint) hint.remove();
+  const node = el("div", "msg " + cls);
+  buildInner(node);
+  box.appendChild(node);
+  box.scrollTop = box.scrollHeight;
+  return node;
+}
+
+function renderCitations(container, citations) {
+  if (!citations || !citations.length) return;
+  const wrap = el("div", "citations");
+  wrap.appendChild(el("div", "cit-label", `Sources (${citations.length})`));
+  for (const cit of citations) {
+    const b = el("button", "cit");
+    const head = el("div", "cit-head", `${cit.meeting_title} · ${cit.timestamp}`);
+    const snip = el("div", "cit-snip", cit.snippet);
+    b.append(head, snip);
+    b.addEventListener("click", () => openMeetingAt(cit.meeting_id, cit.start));
+    wrap.appendChild(b);
+  }
+  container.appendChild(wrap);
+}
+
+async function askQuestion(question) {
+  question = (question || "").trim();
+  if (!question) return;
+  addMsg("msg-user", (n) => (n.textContent = question));
+  $("#chat-q").value = "";
+  $("#chat-send").disabled = true;
+  const typing = addMsg("typing", (n) => (n.textContent = "Searching your meetings…"));
+  try {
+    const scope = $("#chat-scope").value || null;
+    const r = await api("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, meeting_id: scope }),
+    });
+    typing.remove();
+    const refused = r.mode === "refused" || r.mode === "empty";
+    addMsg("msg-bot" + (refused ? " refused" : ""), (n) => {
+      if (r.note) n.appendChild(el("div", "msg-note", r.note));
+      if (r.answer) n.appendChild(el("div", "msg-answer", r.answer));
+      else if (r.mode === "retrieval_only") n.appendChild(el("div", "msg-answer", "Here are the most relevant excerpts:"));
+      renderCitations(n, r.citations);
+    });
+    loadRagStatus();
+  } catch (err) {
+    typing.remove();
+    addMsg("msg-bot refused", (n) => (n.textContent = err.message));
+  } finally {
+    $("#chat-send").disabled = false;
+    $("#chat-q").focus();
+  }
+}
+
+$("#chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  askQuestion($("#chat-q").value);
+});
+document.addEventListener("click", (e) => {
+  if (e.target.classList.contains("example-q")) askQuestion(e.target.textContent);
+});
 
 // ------------------------------------------------------------------ wire up
 $("#upload-btn").addEventListener("click", uploadMeeting);

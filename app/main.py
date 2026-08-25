@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, config, storage, summarize, transcription
+from . import __version__, config, rag, storage, summarize, transcription
 
 app = FastAPI(title="MeetSaransh", version=__version__)
 
@@ -102,6 +102,7 @@ async def api_create_meeting(
         audio_ext=ext,
         meeting_id=meeting_id,
     )
+    _safe_index(meeting_id)
     return storage.get_meeting(meeting_id)  # type: ignore[return-value]
 
 
@@ -138,6 +139,7 @@ def api_create_sample() -> dict:
         title=sample["title"], filename="sample_meeting.mp3",
         transcript=transcript, summary=summary, audio_ext=None,
     )
+    _safe_index(mid)
     return storage.get_meeting(mid)  # type: ignore[return-value]
 
 
@@ -150,6 +152,29 @@ def api_get_audio(meeting_id: str):
     if not audio.exists():
         raise HTTPException(status_code=404, detail="Audio file not found")
     return FileResponse(audio)
+
+
+# ------------------------------------------------------------------- RAG / chat
+@app.get("/api/rag/status")
+def api_rag_status() -> dict:
+    return rag.status()
+
+
+@app.post("/api/reindex")
+def api_reindex() -> dict:
+    """(Re)index any meetings that aren't in the vector store yet."""
+    return rag.reindex_all()
+
+
+@app.post("/api/chat")
+def api_chat(payload: dict = Body(...)) -> dict:
+    """Answer a question grounded in the user's meetings (optionally scoped to one)."""
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="A 'question' is required.")
+    scope = payload.get("meeting_id") or None
+    rag.reindex_all()  # cheap: only indexes meetings not already indexed
+    return rag.answer(question, scope_meeting_id=scope)
 
 
 @app.get("/api/meetings/{meeting_id}/export", response_class=PlainTextResponse)
@@ -174,6 +199,14 @@ def _validate_upload(file: UploadFile) -> str:
 
 def _mb(n: int) -> str:
     return f"{n / (1024 * 1024):.1f}"
+
+
+def _safe_index(meeting_id: str) -> None:
+    """Index a meeting for RAG without ever failing the main request."""
+    try:
+        rag.index_meeting(meeting_id)
+    except Exception:  # indexing is best-effort; the meeting is already saved
+        pass
 
 
 def _to_markdown(meeting: dict) -> str:

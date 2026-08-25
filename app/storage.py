@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+import numpy as np
+
 from . import config
 
 _SCHEMA = """
@@ -27,6 +29,19 @@ CREATE TABLE IF NOT EXISTS meetings (
     summary_json  TEXT,
     audio_ext     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id            TEXT PRIMARY KEY,
+    meeting_id    TEXT NOT NULL,
+    ord           INTEGER NOT NULL,
+    start         REAL,
+    end           REAL,
+    text          TEXT NOT NULL,
+    segs_json     TEXT,
+    embedding     BLOB,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_meeting ON chunks(meeting_id);
 """
 
 
@@ -42,16 +57,16 @@ def _connect() -> sqlite3.Connection:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the table once per process, so storage never depends on the startup hook."""
+    """Create the tables once per process, so storage never depends on the startup hook."""
     global _initialized
     if not _initialized:
-        conn.execute(_SCHEMA)
+        conn.executescript(_SCHEMA)  # executescript: _SCHEMA has multiple statements
         _initialized = True
 
 
 def init_db() -> None:
     with _connect() as conn:  # _connect already ensures the schema
-        conn.execute(_SCHEMA)
+        conn.executescript(_SCHEMA)
 
 
 def new_id() -> str:
@@ -106,5 +121,66 @@ def get_meeting(meeting_id: str) -> Optional[dict]:
 
 def delete_meeting(meeting_id: str) -> bool:
     with _connect() as conn:
+        conn.execute("DELETE FROM chunks WHERE meeting_id = ?", (meeting_id,))
         cur = conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
     return cur.rowcount > 0
+
+
+# ------------------------------------------------------------------ chunks (RAG)
+def replace_chunks(meeting_id: str, chunks: list[dict]) -> None:
+    """Delete any existing chunks for a meeting and insert the new set.
+
+    Each chunk dict: {ord, start, end, text, embedding(np.ndarray|None)}.
+    Embeddings are stored as raw float32 bytes (or NULL when unavailable).
+    """
+    with _connect() as conn:
+        conn.execute("DELETE FROM chunks WHERE meeting_id = ?", (meeting_id,))
+        conn.executemany(
+            """INSERT INTO chunks (id, meeting_id, ord, start, end, text, segs_json, embedding)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    new_id(), meeting_id, c["ord"], c.get("start"), c.get("end"), c["text"],
+                    json.dumps(c.get("segs", [])),
+                    (c["embedding"].astype("float32").tobytes() if c.get("embedding") is not None else None),
+                )
+                for c in chunks
+            ],
+        )
+
+
+def get_chunks(scope_meeting_id: Optional[str] = None) -> list[dict]:
+    """Fetch chunks (optionally for one meeting), joined with the meeting title.
+
+    Returns dicts with `embedding` decoded back to a float32 numpy array (or None).
+    """
+    query = (
+        "SELECT c.id, c.meeting_id, c.ord, c.start, c.end, c.text, c.segs_json, c.embedding, m.title "
+        "FROM chunks c JOIN meetings m ON m.id = c.meeting_id"
+    )
+    params: tuple = ()
+    if scope_meeting_id:
+        query += " WHERE c.meeting_id = ?"
+        params = (scope_meeting_id,)
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        blob = d.pop("embedding")
+        d["embedding"] = np.frombuffer(blob, dtype="float32") if blob else None
+        d["segs"] = json.loads(d.pop("segs_json") or "[]")
+        d["meeting_title"] = d.pop("title")
+        out.append(d)
+    return out
+
+
+def indexed_meeting_ids() -> set[str]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT DISTINCT meeting_id FROM chunks").fetchall()
+    return {r["meeting_id"] for r in rows}
+
+
+def count_chunks() -> int:
+    with _connect() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]

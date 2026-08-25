@@ -1,43 +1,33 @@
 # 🎙️ MeetSaransh - Meeting Summarizer
 
-Transcribe meeting audio and generate **action-oriented** summaries a clean transcript,
-a layered summary, and a table of action items with owners, due dates, and timestamps
-that jump back to the exact moment in the recording.
+Transcribe meeting audio, generate **action-oriented** summaries, and **ask questions
+across all your meetings** with grounded, cited answers.
 
 > _Saransh_ (सारांश) is Hindi for "summary".
 
-**Pipeline:** `audio → validate → transcribe (Whisper) → summarize (LLM) → store → view`
-
----
-
-## Why this is scoped the way it is
-
-The assignment asks for one thing done well: **audio -> transcript -> summary + action items**,
-graded on _transcription accuracy, summary quality, LLM prompt effectiveness, and code
-structure_. The submission guidelines add a hard constraint: **"keep dependencies minimal
-and native whenever possible."**
-
-So this project deliberately does **not** ship a vector database, RAG chat, speaker
-diarization, or multi-user auth in v1. Those are interesting (see [Roadmap](#roadmap)), but
-none appear in the grading criteria and each would drag in heavy dependencies that work
-against the guidelines. Instead, the effort goes into the four things that _are_ graded.
-Every dependency in [`requirements.txt`](requirements.txt) is annotated with why it's there;
-storage and JSON use the Python standard library on purpose.
+**Pipelines:**
+`audio -> validate -> transcribe (Whisper) -> summarize (LLM) -> store -> view`
+`question -> hybrid retrieval -> grounded answer (LLM) -> cited excerpts`
 
 ---
 
 ## Features
 
-- **Upload audio** (`.mp3 .wav .m4a .mp4 .webm .ogg .flac …`) and get a transcript + summary.
-- **Layered summary** — TL;DR → key decisions → action items → open questions → topic
+- **Upload audio** (`.mp3 .wav .m4a .mp4 .webm .ogg .flac ...`) -> transcript + summary.
+- **Layered summary** - TL;DR -> key decisions -> action items -> open questions -> topic
   timeline. Depth, not one flat paragraph.
-- **Grounded action items** — each with an owner (or `Unassigned`), a due date (or
-  `Not specified`), and a `[mm:ss]` timestamp. The prompt is instructed **not to invent**
-  owners or dates.
-- **Click-to-seek** — every timestamp in the summary and transcript seeks the audio player.
+- **Grounded action items** - each with an owner (or `Unassigned`), a due date (or
+  `Not specified`), and a `[mm:ss]` timestamp. The prompt is told **not to invent** them.
+- **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with a
+  written answer and **clickable citations** that jump to the exact transcript moment.
+  Honest by design: it says *"I couldn't find anything about that"* when a topic wasn't
+  discussed, instead of guessing.
+- **Click-to-seek** everywhere - timestamps in the summary, transcript, and chat citations
+  all seek the audio / scroll the transcript.
 - **Transcript search** with match highlighting.
-- **Export** the summary as copy-ready Markdown (a follow-up email / notes doc in one click).
-- **Runs with no API key** — a bundled sample meeting demonstrates the whole UI offline.
+- **Export** the summary as copy-ready Markdown.
+- **Runs with no API key** - a bundled sample meeting demonstrates the whole app offline;
+  RAG chat falls back to returning the most relevant excerpts.
 
 ---
 
@@ -47,64 +37,72 @@ storage and JSON use the Python standard library on purpose.
 (no credit card). The app also runs **without** a key using the sample meeting.
 
 ```bash
-# 1. Install dependencies (a virtualenv is recommended)
 python -m venv .venv
-.venv\Scripts\activate            # Windows
-# source .venv/bin/activate       # macOS/Linux
+.venv\Scripts\activate            # Windows   (source .venv/bin/activate on macOS/Linux)
 pip install -r requirements.txt
 
-# 2. Add your key (optional - skip to run in sample-only mode)
-copy .env.example .env            # Windows   (cp on macOS/Linux)
-# then paste your key into GROQ_API_KEY=...
+copy .env.example .env            # optional - paste your GROQ_API_KEY (cp on macOS/Linux)
 
-# 3. Run
 python run.py
 ```
 
-Open **http://127.0.0.1:8000**. Click **Load sample meeting** to see it work immediately,
-or upload your own audio once a key is set.
+Open **http://127.0.0.1:8000** -> **Load sample meeting** -> try the **Ask your meetings** tab.
+On first RAG use, a ~90 MB embedding model downloads once and is cached.
 
 ---
 
-## How it maps to the evaluation criteria
+## "Ask your meetings" - how the RAG works
 
-| Graded on | Where it's addressed |
-| --- | --- |
-| **Transcription accuracy** | Groq `whisper-large-v3-turbo` with segment timestamps ([`transcription.py`](app/transcription.py)) |
-| **Summary quality** | Layered structure with decisions, owners, due dates, open questions ([`prompts.py`](app/prompts.py)) |
-| **LLM prompt effectiveness** | Prompt is a first-class artifact: strict JSON contract, grounding rules, no-invention guardrails, `temperature=0.2` |
-| **Code structure** | Clear separation: config · prompts · ASR · summarize · storage · routes; typed, documented, tiny dependency list |
+The interesting engineering is here, so it's worth spelling out:
+
+- **Chunking** groups consecutive transcript segments into ~130-word chunks with overlap,
+  keeping each chunk's `[start, end]` timestamps and its constituent segments - so a
+  citation can point at the exact line that answers the question, not just a chunk.
+- **Hybrid retrieval** combines a **dense** semantic score (`fastembed` bge-small cosine)
+  with a **lexical** BM25 score (pure Python). Research on spoken/transcript content shows
+  hybrid beats pure-vector search - and the lexical half means the feature still works if
+  the embedding model can't load.
+- **Two-layer grounding.** A cheap similarity gate hard-refuses clearly-unrelated questions;
+  for everything else the LLM prompt is the real guard - it may answer *only* from the
+  retrieved excerpts and must say so when they don't contain the answer.
+- **Query-aware citations.** Each source shows the most relevant segment (with its own
+  timestamp) and links straight into the transcript at that moment.
+- **Storage:** embeddings are stored as `float32` blobs in SQLite; retrieval is brute-force
+  cosine in numpy. At this scale that's correct and simple - an ANN index (HNSW/IVFFlat) is
+  the scaling path, not a demo requirement.
 
 ---
 
 ## Architecture
 
 ```
-Browser (vanilla HTML/JS, no build step)
-        │  fetch()
-        ▼
-FastAPI (app/main.py) - routes, upload validation, Markdown export
-        │
-        ├── app/transcription.py  → Groq Whisper  (ASR, segment timestamps)
-        ├── app/summarize.py      → Groq Llama    (structured JSON summary)
-        ├── app/prompts.py        → prompt engineering (isolated & documented)
-        └── app/storage.py        → SQLite via stdlib (single-file DB)
+Browser (vanilla HTML/JS, no build step) -- Meetings view + Ask (chat) view
+        |  fetch()
+        v
+FastAPI (app/main.py) -- routes, upload validation, Markdown export
+        |
+        +-- app/transcription.py  -> Groq Whisper  (ASR, segment timestamps)
+        +-- app/summarize.py      -> structured JSON summary
+        +-- app/rag.py            -> chunk . hybrid retrieve . grounded answer
+        +-- app/embeddings.py     -> fastembed bge-small (ONNX, lazy-loaded)
+        +-- app/llm.py            -> shared Groq chat client (retry/backoff)
+        +-- app/prompts.py        -> prompt engineering (summary + RAG)
+        +-- app/storage.py        -> SQLite: meetings + chunks (stdlib)
 ```
 
 ```
-MeetSaransh/
-├── app/
-│   ├── main.py            # FastAPI routes + processing pipeline
-│   ├── config.py          # env/config, limits, paths
-│   ├── transcription.py   # ASR provider call + timestamp formatting
-│   ├── summarize.py       # LLM call + defensive JSON parsing
-│   ├── prompts.py         # the prompt (graded artifact)
-│   └── storage.py         # SQLite persistence (stdlib)
-├── static/                # index.html, style.css, app.js (no framework)
-├── data/sample/           # bundled sample meeting (offline demo)
-├── requirements.txt       # 5 deps, each annotated
-├── .env.example
-└── run.py
+app/
+  main.py          # routes + pipelines
+  config.py        # env, limits, RAG tunables
+  transcription.py # ASR + timestamp formatting
+  summarize.py     # summary + defensive JSON parsing
+  rag.py           # chunking, BM25, hybrid retrieval, grounded answer
+  prompts.py       # graded prompt artifacts (summary + RAG)
+  storage.py       # SQLite (meetings + chunks)
+  llm.py           # shared chat client + retry/backoff
+  embeddings.py    # local dense embeddings (fastembed)
+static/            # index.html, style.css, app.js  (no framework)
+data/sample/       # bundled sample meeting (offline demo)
 ```
 
 ### API
@@ -112,77 +110,75 @@ MeetSaransh/
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET`  | `/api/health` | status, model names, whether a key is set |
-| `POST` | `/api/meetings` | upload audio → transcribe → summarize → store |
-| `POST` | `/api/meetings/sample` | create the bundled sample meeting (no key needed) |
-| `GET`  | `/api/meetings` | list meetings |
-| `GET`  | `/api/meetings/{id}` | full meeting (transcript + segments + summary) |
-| `GET`  | `/api/meetings/{id}/audio` | stream the stored audio |
-| `GET`  | `/api/meetings/{id}/export` | summary as Markdown |
-| `DELETE` | `/api/meetings/{id}` | delete meeting + its audio |
+| `POST` | `/api/meetings` | upload audio -> transcribe -> summarize -> store -> index |
+| `POST` | `/api/meetings/sample` | create the bundled sample (no key needed) |
+| `GET`  | `/api/meetings` , `/api/meetings/{id}` | list , full meeting |
+| `GET`  | `/api/meetings/{id}/audio` , `/export` | stream audio , Markdown export |
+| `DELETE` | `/api/meetings/{id}` | delete meeting + audio + chunks |
+| `POST` | `/api/chat` | grounded Q&A over meetings (optional `meeting_id` scope) |
+| `POST` | `/api/reindex` | index any meetings not yet in the vector store |
+| `GET`  | `/api/rag/status` | embeddings availability, indexed meeting/chunk counts |
 
 ---
 
 ## Design decisions (and the trade-offs)
 
-Each choice below was made by asking "what does the assignment actually reward?" rather than
-"what's the most impressive stack?"
-
-- **Python + FastAPI + vanilla JS, no frontend framework.** ASR and the LLM are just HTTP
-  calls, so a heavy SPA earns nothing. A framework-free frontend means **zero `node_modules`
-  and no build artifacts** - exactly what the guidelines ask for.
-- **SQLite via the standard library, not a hosted DB or an ORM.** Satisfies "backend to
-  store & process data" with a real relational store, zero extra dependencies, and no
-  external service to stand up. Trade-off: single-writer, not built for high concurrency —
-  fine for this scope.
-- **Synchronous processing with a loading state, not a job queue.** A background worker +
-  polling would be more "production", but adds moving parts and failure modes for no benefit
-  in a single-user local demo. Groq's Whisper is fast. _(Async is a roadmap item, not a
-  pretense.)_
-- **Grounding over cleverness in the prompt.** `temperature=0.2`, explicit "don't invent
-  owners/dates", and empty-list-if-absent rules. A summary that quietly fabricates an owner
-  is worse than one that says `Unassigned`.
-- **No ffmpeg / no audio chunking in v1.** Both mean a heavy dependency or a system binary.
-  Files are validated and capped at 25 MB (the provider's limit) with a clear message
-  instead. Chunking longer audio is a roadmap item.
+- **Python + FastAPI + vanilla JS, no frontend framework** - ASR/LLM are just HTTP calls, so
+  a heavy SPA earns nothing. Zero `node_modules`, no build step.
+- **SQLite via the standard library** for both meetings and the vector store - a real
+  relational DB, no hosted service, no ORM. Trade-off: single-writer, not built for high
+  concurrency - fine for this scope.
+- **`fastembed` (ONNX) over `sentence-transformers` (torch)** for embeddings - CPU-friendly,
+  no heavy `torch` dependency, no extra API key (Groq has no embeddings endpoint), works
+  offline. The model downloads once and caches.
+- **Hybrid retrieval, not pure-vector** - better recall on conversational text, and it
+  degrades to lexical-only if embeddings are unavailable.
+- **LLM as the real grounding layer** - the similarity gate can't separate "loosely related"
+  from "off-topic" reliably (bge-small compresses those into one score band), so the prompt
+  does the honest refusing. Documented rather than pretended-away.
+- **Shared `llm.py` with retry-and-backoff on 429** - the free-tier rate limits make this a
+  real requirement, not decoration.
+- **Synchronous processing with a loading state**, not a job queue - fewer failure modes for
+  a single-user app. Async is a roadmap item, not a pretense.
+- **No ffmpeg / no audio chunking in v1** - both mean a heavy dependency or a system binary;
+  files are validated and capped at 25 MB (the provider's limit) instead.
 
 ---
 
 ## Security & robustness notes
 
-- API key is read from `.env` (git-ignored) and used **server-side only** — never exposed to
+- API key is read from `.env` (git-ignored) and used **server-side only** - never sent to
   the browser.
-- Uploads are validated by **extension and size** before any provider call.
-- Provider errors are mapped to actionable messages (401 → check key, 429 → rate limit,
-  413 → file too large) rather than surfaced raw.
-- LLM JSON is parsed **defensively** (fence-stripping + outermost-object fallback), and every
-  summary field is normalized so the UI never breaks on a malformed response.
+- Uploads are validated by extension and size before any provider call.
+- Provider errors map to actionable messages (401 -> check key, 429 -> rate limit,
+  413 -> too large); the LLM client retries transient 429s with exponential backoff.
+- LLM JSON is parsed defensively and every summary field is normalized, so a malformed
+  response never breaks the UI.
+- RAG indexing is best-effort: if it fails, the meeting is still saved and viewable.
 
 ---
 
 ## Roadmap
 
-Deferred on purpose - out of scope for the graded criteria and/or the "minimal dependencies"
-guideline, but the natural next steps:
-
-- **Cross-meeting RAG chat** - "what did we decide about pricing?" across all meetings. Can
-  be built lean (an embeddings API + a numpy/SQLite vector store) without a hosted vector DB.
-- **Speaker diarization** - label "Speaker 1 -> Priya". High perceived-quality gain; costs a
-  heavy model dependency, so deferred.
-- **Async transcription queue** with progress + retry-with-backoff on 429s.
+- **Async transcription queue** with progress + richer retry semantics.
 - **Long-audio chunking** with overlap to exceed the 25 MB single-file cap.
-- **Multi-user auth** with per-user meeting isolation.
+- **Speaker diarization** - label "Speaker 1 -> Priya".
+- **Multi-user auth** with per-user meeting/vector isolation.
+- **ANN vector index** (HNSW/IVFFlat) once the corpus outgrows brute-force cosine.
 
 ---
 
 ## Limitations
 
-- Diarization is not included, so the transcript is not speaker-labelled.
-- Single file per upload, ≤ 25 MB (~40 min of typical audio).
-- SQLite + local file storage: designed for a single-user local run, not a deployed service.
+- Diarization is not included, so transcripts aren't speaker-labelled.
+- Single file per upload, <= 25 MB (~40 min of typical audio).
+- SQLite + local files: designed for a single-user local run, not a deployed service.
+- The RAG refusal gate is deliberately lenient; the LLM prompt does the final grounding, so
+  a written refusal for off-topic questions requires an API key.
 
 ---
 
 ## Tech stack
 
-Python · FastAPI · Uvicorn · httpx · SQLite (stdlib) · vanilla JS/HTML/CSS ·
-Groq (Whisper `large-v3-turbo` + Llama `3.3-70b-versatile`).
+Python . FastAPI . Uvicorn . httpx . SQLite (stdlib) . fastembed (bge-small, ONNX) . numpy .
+vanilla JS/HTML/CSS . Groq (Whisper `large-v3-turbo` + Llama `3.3-70b-versatile`).

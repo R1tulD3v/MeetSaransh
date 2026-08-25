@@ -15,6 +15,10 @@
         <p class="tag">Audio → transcript → action-oriented summary</p>
       </div>
     </div>
+    <nav class="viewnav">
+      <button id="nav-meetings" class="navbtn navbtn-active" data-view="meetings">📋 Meetings</button>
+      <button id="nav-ask" class="navbtn" data-view="ask">💬 Ask your meetings</button>
+    </nav>
     <div id="status-badge" class="badge badge-muted">checking…</div>
   </header>
 
@@ -88,6 +92,35 @@
       </div>
     </section>
   </main>
+
+  <!-- Ask-your-meetings (RAG chat) view -->
+  <section id="chat-view" class="chat-view hidden">
+    <div class="chat-head">
+      <div>
+        <h2>💬 Ask your meetings</h2>
+        <p class="tag" id="rag-status">Grounded Q&amp;A across your meetings, with citations.</p>
+      </div>
+      <label class="field scope-field">
+        <span>Scope</span>
+        <select id="chat-scope"><option value="">All meetings</option></select>
+      </label>
+    </div>
+
+    <div id="chat-messages" class="chat-messages">
+      <div class="chat-hint">
+        Ask anything about your meetings — e.g.
+        <button class="example-q">What did we decide about the payment bug?</button>
+        <button class="example-q">What are Rahul's action items?</button>
+        <button class="example-q">Why was push notifications delayed?</button>
+      </div>
+    </div>
+
+    <form id="chat-form" class="chat-input">
+      <input id="chat-q" type="text" autocomplete="off"
+             placeholder="Ask a question about your meetings…" />
+      <button class="btn btn-primary" type="submit" id="chat-send">Ask</button>
+    </form>
+  </section>
 
   <div id="toast" class="toast hidden"></div>
   <script src="/static/app.js"></script>

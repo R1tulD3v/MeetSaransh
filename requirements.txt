@@ -5,5 +5,9 @@ httpx==0.28.1            # HTTP client for the Groq ASR + LLM calls
 python-multipart==0.0.20 # required by FastAPI to accept audio file uploads
 python-dotenv==1.0.1     # load the Groq API key from a local .env file
 
+# --- RAG ("Ask your meetings") ---
+fastembed==0.8.0         # local bge-small embeddings via ONNX (no torch, no API key)
+numpy==2.5.2             # vector math for cosine similarity over stored embeddings
+
 # Storage (SQLite) and JSON handling use the Python standard library on purpose,
 # to keep the dependency footprint small (see README "Design decisions").

@@ -161,4 +161,58 @@ mark { background: #ffe58a; color: inherit; border-radius: 3px; }
 }
 .toast.error { background: var(--danger); color: #fff; }
 
+/* ---- top nav (view switch) ---- */
+.viewnav { display: flex; gap: 4px; }
+.navbtn {
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  padding: 7px 13px; border-radius: 9px; cursor: pointer; font-size: 13.5px; font-weight: 600;
+}
+.navbtn-active { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+@media (max-width: 640px) { .navbtn { padding: 7px 9px; font-size: 12px; } .tag { display: none; } }
+
+/* ---- chat view ---- */
+.chat-view {
+  max-width: 860px; margin: 18px auto; padding: 0 18px;
+  display: flex; flex-direction: column; height: calc(100vh - 130px);
+}
+.chat-head {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;
+  padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 14px;
+}
+.chat-head h2 { font-size: 19px; }
+.scope-field { margin-bottom: 0; min-width: 180px; }
+.scope-field select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--ink); font-size: 13.5px;
+}
+.chat-messages {
+  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 4px 2px;
+}
+.chat-hint { color: var(--muted); font-size: 14px; text-align: center; margin: auto 0; }
+.example-q {
+  display: inline-block; margin: 6px 4px 0; background: var(--chip); color: var(--brand);
+  border: none; border-radius: 999px; padding: 6px 12px; font-size: 12.5px; cursor: pointer;
+}
+.example-q:hover { filter: brightness(.96); }
+
+.msg { max-width: 82%; padding: 11px 14px; border-radius: 14px; font-size: 14.5px; }
+.msg-user { align-self: flex-end; background: var(--brand); color: var(--brand-ink); border-bottom-right-radius: 4px; }
+.msg-bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg-bot.refused { border-style: dashed; color: var(--muted); }
+.msg-note { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; font-style: italic; }
+.msg-answer { white-space: pre-wrap; }
+
+.citations { margin-top: 11px; display: flex; flex-direction: column; gap: 7px; }
+.citations .cit-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.cit {
+  display: block; text-align: left; width: 100%; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 9px; padding: 8px 10px; cursor: pointer; font-size: 13px; color: var(--ink);
+}
+.cit:hover { border-color: var(--brand); }
+.cit .cit-head { font-weight: 600; color: var(--brand); font-size: 12.5px; margin-bottom: 3px; }
+.cit .cit-snip { color: var(--muted); }
+
+.typing { align-self: flex-start; color: var(--muted); font-size: 13px; padding: 6px 4px; }
+.seg.seg-flash { background: rgba(47,107,255,.12); border-radius: 6px; }
+
 .hidden { display: none !important; }

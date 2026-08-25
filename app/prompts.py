@@ -70,3 +70,36 @@ def build_messages(title: str, transcript: str) -> list[dict]:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": USER_PROMPT_TEMPLATE.format(title=title or "Untitled meeting", transcript=transcript)},
     ]
+
+
+# --------------------------------------------------------------------- RAG chat
+# The chat answer must stay grounded in the retrieved excerpts. The prompt forbids
+# outside knowledge and instructs an explicit refusal when the context is silent.
+RAG_SYSTEM_PROMPT = """You are a helpful assistant that answers questions about the \
+user's past meetings, using ONLY the excerpts provided below.
+
+Each excerpt is labelled with its meeting title and a [mm:ss] timestamp.
+
+Rules:
+- Answer strictly from the excerpts. Do NOT use outside knowledge or make assumptions.
+- If the excerpts do not contain the answer, say clearly: "I couldn't find anything \
+about that in your meetings." Do not guess.
+- When you state a fact, mention which meeting it came from (by title) and the [mm:ss].
+- Be concise and direct. Prefer specifics from the excerpts over generalities."""
+
+RAG_USER_TEMPLATE = """Question: {question}
+
+Meeting excerpts:
+---
+{context}
+---
+
+Answer the question using only the excerpts above."""
+
+
+def build_rag_messages(question: str, context: str) -> list[dict]:
+    """Assemble the chat messages for a grounded RAG answer."""
+    return [
+        {"role": "system", "content": RAG_SYSTEM_PROMPT},
+        {"role": "user", "content": RAG_USER_TEMPLATE.format(question=question, context=context)},
+    ]

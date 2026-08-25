@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
-
-from . import config, prompts
+from . import config, llm, prompts
 
 
 class SummarizationError(RuntimeError):
@@ -35,30 +33,14 @@ def summarize(title: str, timestamped_transcript: str) -> dict:
     if not timestamped_transcript.strip():
         raise SummarizationError("Transcript is empty; nothing to summarize.")
 
-    url = f"{config.GROQ_BASE_URL}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {config.GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": config.LLM_MODEL,
-        "messages": prompts.build_messages(title, timestamped_transcript),
-        "temperature": 0.2,  # low -> faithful, less inventive (grounding matters here)
-        "response_format": {"type": "json_object"},
-    }
-
+    # temperature 0.2 -> faithful, less inventive (grounding matters here).
     try:
-        resp = httpx.post(url, headers=headers, json=body, timeout=config.HTTP_TIMEOUT_SECONDS)
-    except httpx.HTTPError as exc:
-        raise SummarizationError(f"Could not reach the LLM provider: {exc}") from exc
-
-    if resp.status_code != 200:
-        raise SummarizationError(_explain_http_error(resp))
-
-    try:
-        content = resp.json()["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, ValueError) as exc:
-        raise SummarizationError(f"Unexpected LLM response shape: {exc}") from exc
+        content = llm.chat(
+            prompts.build_messages(title, timestamped_transcript),
+            json_mode=True, temperature=0.2,
+        )
+    except llm.LLMError as exc:
+        raise SummarizationError(str(exc)) from exc
 
     return normalize_summary(_parse_json(content))
 
@@ -112,16 +94,3 @@ def normalize_summary(data: dict) -> dict:
 
 def _as_list(value) -> list:
     return value if isinstance(value, list) else []
-
-
-def _explain_http_error(resp: httpx.Response) -> str:
-    code = resp.status_code
-    try:
-        detail = resp.json().get("error", {}).get("message", resp.text)
-    except Exception:
-        detail = resp.text
-    if code == 401:
-        return "LLM provider rejected the API key (401). Check GROQ_API_KEY in your .env."
-    if code == 429:
-        return "LLM provider rate limit hit (429). Wait a moment and retry."
-    return f"LLM provider error {code}: {detail}"
