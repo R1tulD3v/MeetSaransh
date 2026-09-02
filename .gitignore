@@ -9,6 +9,14 @@ __pycache__/
 venv/
 env/
 
+# ---- Test / tooling artifacts ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
 # ---- Runtime data (audio uploads + local DB) ----
 data/audio/
 data/meetsaransh.db

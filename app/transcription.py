@@ -7,11 +7,16 @@ We request `verbose_json` with segment timestamps so downstream code can:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
-from . import config
+from . import config, observability
+from .observability import get_logger
+
+log = get_logger("meetsaransh.asr")
 
 
 class TranscriptionError(RuntimeError):
@@ -53,29 +58,58 @@ def transcribe(audio_path: Path) -> dict:
             "response_format": "verbose_json",
             "timestamp_granularities[]": "segment",
         }
+        started = time.monotonic()
         try:
             resp = httpx.post(
-                url, headers=headers, files=files, data=data,
+                url,
+                headers=headers,
+                files=files,
+                data=data,
                 timeout=config.HTTP_TIMEOUT_SECONDS,
             )
         except httpx.HTTPError as exc:  # network-level failure
+            _record("network_error", time.monotonic() - started)
             raise TranscriptionError(f"Could not reach the ASR provider: {exc}") from exc
 
+    elapsed = time.monotonic() - started
     if resp.status_code != 200:
+        _record("error", elapsed)
         raise TranscriptionError(_explain_http_error(resp))
 
+    _record("success", elapsed)
     payload = resp.json()
-    return _normalize(payload)
+    result = _normalize(payload)
+    # The ratio of these two numbers is the app's headline performance claim, so it is
+    # logged on every transcription rather than measured by hand once.
+    log.info(
+        "transcription complete",
+        extra={
+            "audio_seconds": round(result["duration"], 1),
+            "wall_seconds": round(elapsed, 2),
+            "segments": len(result["segments"]),
+        },
+    )
+    return result
+
+
+def _record(outcome: str, elapsed: float) -> None:
+    if config.METRICS_ENABLED:
+        observability.PROVIDER_CALLS.labels("asr", outcome).inc()
+        observability.PROVIDER_DURATION.labels("asr").observe(elapsed)
 
 
 def _normalize(payload: dict) -> dict:
     """Shape Groq's verbose_json response into our internal transcript dict."""
     raw_segments = payload.get("segments") or []
-    segments = [
-        {"start": float(s.get("start", 0.0)), "end": float(s.get("end", 0.0)), "text": (s.get("text") or "").strip()}
+    segments: list[dict[str, Any]] = [
+        {
+            "start": float(s.get("start", 0.0)),
+            "end": float(s.get("end", 0.0)),
+            "text": (s.get("text") or "").strip(),
+        }
         for s in raw_segments
     ]
-    full_text = (payload.get("text") or " ".join(s["text"] for s in segments)).strip()
+    full_text = str(payload.get("text") or " ".join(str(s["text"]) for s in segments)).strip()
     timestamped = build_timestamped_text(segments) if segments else full_text
     duration = segments[-1]["end"] if segments else float(payload.get("duration", 0.0) or 0.0)
     return {

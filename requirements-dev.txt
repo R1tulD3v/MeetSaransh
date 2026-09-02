@@ -1,0 +1,10 @@
+# Development + CI dependencies. Runtime deps live in requirements.txt.
+-r requirements.txt
+
+pytest==8.3.4            # test runner
+pytest-cov==6.0.0        # coverage measurement + the CI coverage gate
+respx==0.22.0            # mock httpx calls, so tests never touch the Groq API
+ruff==0.9.4              # linter + formatter
+mypy==1.14.1             # static type checking
+pip-audit==2.7.3         # dependency vulnerability scanning in CI
+pre-commit==4.1.0        # run the above on every commit

@@ -68,7 +68,12 @@ def build_messages(title: str, transcript: str) -> list[dict]:
     """Assemble the chat messages for the summarization call."""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(title=title or "Untitled meeting", transcript=transcript)},
+        {
+            "role": "user",
+            "content": USER_PROMPT_TEMPLATE.format(
+                title=title or "Untitled meeting", transcript=transcript
+            ),
+        },
     ]
 
 

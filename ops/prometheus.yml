@@ -1,0 +1,16 @@
+# Minimal Prometheus config for the local observability profile.
+# Start it with:  docker compose --profile observability up --build
+# Then open http://localhost:9090 and try:
+#   histogram_quantile(0.95, sum(rate(meetsaransh_http_request_duration_seconds_bucket[5m])) by (le, route))
+#   sum(rate(meetsaransh_provider_calls_total[5m])) by (provider, outcome)
+#   sum(rate(meetsaransh_rate_limited_total[5m])) by (route)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: meetsaransh
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8000"]

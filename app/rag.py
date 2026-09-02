@@ -44,16 +44,21 @@ def chunk_segments(segments: list[dict]) -> list[dict]:
         seg_slice = segments[i:j]
         text = " ".join(s["text"].strip() for s in seg_slice).strip()
         if text:
-            chunks.append({
-                "ord": ordinal,
-                "start": float(seg_slice[0].get("start", 0.0)),
-                "end": float(seg_slice[-1].get("end", 0.0)),
-                "text": text,
-                # Keep the constituent segments so citations can point at the exact
-                # matching line (precise timestamp + relevant snippet), not just the
-                # chunk's first line.
-                "segs": [{"start": float(s.get("start", 0.0)), "text": s["text"].strip()} for s in seg_slice],
-            })
+            chunks.append(
+                {
+                    "ord": ordinal,
+                    "start": float(seg_slice[0].get("start", 0.0)),
+                    "end": float(seg_slice[-1].get("end", 0.0)),
+                    "text": text,
+                    # Keep the constituent segments so citations can point at the exact
+                    # matching line (precise timestamp + relevant snippet), not just the
+                    # chunk's first line.
+                    "segs": [
+                        {"start": float(s.get("start", 0.0)), "text": s["text"].strip()}
+                        for s in seg_slice
+                    ],
+                }
+            )
             ordinal += 1
         if j >= n:
             break
@@ -108,12 +113,77 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 # Function/question words that shouldn't count as "this topic was discussed" evidence.
 _STOPWORDS = {
-    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with",
-    "about", "as", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
-    "we", "our", "us", "i", "my", "me", "you", "your", "they", "them", "it", "its", "he",
-    "she", "him", "her", "this", "that", "these", "those", "what", "when", "who", "whom",
-    "why", "how", "which", "where", "any", "some", "there", "here", "get", "got", "have",
-    "has", "had", "will", "would", "can", "could", "should", "tell", "say", "said", "please",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "about",
+    "as",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "do",
+    "does",
+    "did",
+    "we",
+    "our",
+    "us",
+    "i",
+    "my",
+    "me",
+    "you",
+    "your",
+    "they",
+    "them",
+    "it",
+    "its",
+    "he",
+    "she",
+    "him",
+    "her",
+    "this",
+    "that",
+    "these",
+    "those",
+    "what",
+    "when",
+    "who",
+    "whom",
+    "why",
+    "how",
+    "which",
+    "where",
+    "any",
+    "some",
+    "there",
+    "here",
+    "get",
+    "got",
+    "have",
+    "has",
+    "had",
+    "will",
+    "would",
+    "can",
+    "could",
+    "should",
+    "tell",
+    "say",
+    "said",
+    "please",
 }
 
 
@@ -126,7 +196,9 @@ def _content_terms(text: str) -> set[str]:
     return {t for t in _tokenize(text) if len(t) > 1 and t not in _STOPWORDS}
 
 
-def _bm25_scores(query: str, docs_tokens: list[list[str]], k1: float = 1.5, b: float = 0.75) -> list[float]:
+def _bm25_scores(
+    query: str, docs_tokens: list[list[str]], k1: float = 1.5, b: float = 0.75
+) -> list[float]:
     """Okapi BM25 scores of a query against a small in-memory corpus."""
     n = len(docs_tokens)
     if n == 0:
@@ -178,10 +250,15 @@ def retrieve(question: str, scope_meeting_id: str | None = None) -> dict:
         qvec = embeddings.embed_one(question)
         if qvec is not None:
             import numpy as np
-            mat = np.vstack([
-                c["embedding"] if c["embedding"] is not None else np.zeros(embeddings.DIM, dtype="float32")
-                for c in chunks
-            ])
+
+            mat = np.vstack(
+                [
+                    c["embedding"]
+                    if c["embedding"] is not None
+                    else np.zeros(embeddings.DIM, dtype="float32")
+                    for c in chunks
+                ]
+            )
             dense_raw = [float(x) for x in embeddings.cosine_scores(qvec, mat)]
             dense_used = True
 
@@ -204,8 +281,11 @@ def retrieve(question: str, scope_meeting_id: str | None = None) -> dict:
     vocab: set[str] = set().union(*docs_tokens) if docs_tokens else set()
     content_match = bool(_content_terms(question) & vocab)
     return {
-        "ranked": ranked, "dense_best": dense_best, "dense_used": dense_used,
-        "content_match": content_match, "empty": False,
+        "ranked": ranked,
+        "dense_best": dense_best,
+        "dense_used": dense_used,
+        "content_match": content_match,
+        "empty": False,
     }
 
 
@@ -262,7 +342,8 @@ def answer(question: str, scope_meeting_id: str | None = None) -> dict:
     if result.get("empty"):
         return {
             "answer": "No meetings have been indexed yet. Add a meeting first.",
-            "citations": [], "mode": "empty",
+            "citations": [],
+            "mode": "empty",
         }
 
     ranked = result["ranked"]

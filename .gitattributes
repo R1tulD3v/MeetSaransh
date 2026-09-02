@@ -1,0 +1,17 @@
+# Normalize line endings in the repository to LF, so a Windows checkout and a Linux CI
+# runner see byte-identical files and the formatter check cannot disagree between them.
+* text=auto eol=lf
+
+# Shell scripts and Docker/CI files must be LF even on a Windows checkout.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary assets git must not touch.
+*.png binary
+*.jpg binary
+*.mp3 binary
+*.wav binary
+*.m4a binary
+*.onnx binary

@@ -1,0 +1,28 @@
+# Never let secrets or local state into an image layer.
+.env
+**/.env
+data/
+# ...except the bundled sample meeting, which the image needs to run in sample mode.
+!data/sample/
+*.db
+
+# Local dev noise
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# VCS / editor / docs that don't affect the runtime
+.git/
+.github/
+.gitignore
+.vscode/
+.idea/
+*.md
+!README.md

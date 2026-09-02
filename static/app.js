@@ -34,12 +34,30 @@ function toast(msg, isError) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), 3800);
 }
 
+// The API version lives here and nowhere else, so bumping it is a one-line change.
+const API = "/api/v1";
+
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const res = await fetch(API + path, opts);
   if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (_) {}
-    throw new Error(detail);
+    // The server returns {"error": {code, message, request_id}} on every failure.
+    // `detail` is the older FastAPI shape, kept as a fallback.
+    let message = res.statusText;
+    let requestId = null;
+    try {
+      const body = await res.json();
+      message = (body.error && body.error.message) || body.detail || message;
+      requestId = body.error && body.error.request_id;
+    } catch (_) {}
+    const err = new Error(message);
+    err.status = res.status;
+    err.requestId = requestId;
+    // A 429 is expected under load rather than broken, so it gets its own hint.
+    if (res.status === 429) {
+      const retry = res.headers.get("Retry-After");
+      err.message = message + (retry ? ` (retry in ${retry}s)` : "");
+    }
+    throw err;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -50,7 +68,7 @@ let currentId = null;
 // ------------------------------------------------------------------ health / badge
 async function loadHealth() {
   try {
-    const h = await api("/api/health");
+    const h = await api("/health");
     const badge = $("#status-badge");
     if (h.has_api_key) {
       badge.textContent = "Groq connected · " + h.asr_model;
@@ -68,7 +86,10 @@ async function loadHealth() {
 // ------------------------------------------------------------------ meeting list
 async function loadMeetings() {
   const list = $("#meeting-list");
-  const meetings = await api("/api/meetings");
+  // Paginated response: {items, total, limit, offset}. The sidebar shows the most
+  // recent page; `total` is what the count badge would use once paging lands in the UI.
+  const page = await api("/meetings?limit=100");
+  const meetings = page.items;
   populateScope(meetings);
   list.innerHTML = "";
   if (!meetings.length) {
@@ -103,7 +124,7 @@ function populateScope(meetings) {
 async function openMeeting(id) {
   currentId = id;
   showLoader(false);
-  const m = await api("/api/meetings/" + id);
+  const m = await api("/meetings/" + id);
   renderMeeting(m);
   document.querySelectorAll("#meeting-list .item").forEach((li) =>
     li.classList.toggle("active", li.dataset.id === id));
@@ -156,7 +177,7 @@ function renderMeeting(m) {
   // audio
   const audio = $("#audio-player");
   if (m.audio_ext) {
-    audio.src = "/api/meetings/" + m.id + "/audio";
+    audio.src = API + "/meetings/" + m.id + "/audio";
     audio.classList.remove("hidden");
   } else {
     audio.removeAttribute("src");
@@ -318,7 +339,7 @@ async function uploadMeeting() {
   $("#upload-btn").disabled = true;
   showLoader(true, "Transcribing & summarizing… this can take a moment.");
   try {
-    const m = await api("/api/meetings", { method: "POST", body: form });
+    const m = await api("/meetings", { method: "POST", body: form });
     currentId = m.id;
     await loadMeetings();
     showLoader(false);
@@ -342,7 +363,7 @@ async function loadSample() {
   $("#sample-btn").disabled = true;
   showLoader(true, "Loading sample meeting…");
   try {
-    const m = await api("/api/meetings/sample", { method: "POST" });
+    const m = await api("/meetings/sample", { method: "POST" });
     currentId = m.id;
     await loadMeetings();
     showLoader(false);
@@ -362,7 +383,7 @@ async function loadSample() {
 async function exportMarkdown() {
   if (!currentId) return;
   try {
-    const res = await fetch("/api/meetings/" + currentId + "/export");
+    const res = await fetch(API + "/meetings/" + currentId + "/export");
     const md = await res.text();
     await navigator.clipboard.writeText(md);
     toast("Markdown copied to clipboard ✓");
@@ -376,7 +397,7 @@ async function deleteMeeting() {
   if (!confirm("Delete this meeting? This cannot be undone.")) return;
   const id = currentId;
   try {
-    await api("/api/meetings/" + id, { method: "DELETE" });
+    await api("/meetings/" + id, { method: "DELETE" });
     currentId = null;
     $("#meeting-view").classList.add("hidden");
     $("#empty-state").classList.remove("hidden");
@@ -403,7 +424,7 @@ document.querySelectorAll(".navbtn").forEach((b) =>
 
 async function loadRagStatus() {
   try {
-    const s = await api("/api/rag/status");
+    const s = await api("/rag/status");
     const mode = s.embeddings_available ? "semantic + keyword" : "keyword-only";
     $("#rag-status").textContent =
       `${s.indexed_meetings} meeting(s) indexed · ${s.total_chunks} chunks · ${mode} search`;
@@ -445,7 +466,7 @@ async function askQuestion(question) {
   const typing = addMsg("typing", (n) => (n.textContent = "Searching your meetings…"));
   try {
     const scope = $("#chat-scope").value || null;
-    const r = await api("/api/chat", {
+    const r = await api("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, meeting_id: scope }),

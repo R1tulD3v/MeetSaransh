@@ -32,6 +32,7 @@ def _get_model():
         if _model is None and not _load_failed:
             try:
                 from fastembed import TextEmbedding  # imported lazily; optional dependency
+
                 _model = TextEmbedding(config.EMBED_MODEL)
             except Exception:
                 _load_failed = True

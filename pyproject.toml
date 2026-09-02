@@ -1,0 +1,84 @@
+[project]
+name = "meetsaransh"
+version = "1.1.0"
+description = "Transcribe meeting audio, generate action-oriented summaries, and ask grounded questions across meetings."
+requires-python = ">=3.12"
+readme = "README.md"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+# ----------------------------------------------------------------------- ruff (lint)
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "data", "static", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import ordering)
+    "B",    # flake8-bugbear (likely bugs)
+    "UP",   # pyupgrade (modern syntax)
+    "C4",   # comprehensions
+    "SIM",  # simplifications
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter, not the linter
+    "B008",    # FastAPI's Depends()/File() defaults are the documented idiom
+    "RUF001",  # the codebase intentionally uses typographic punctuation in strings
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # asserts are the point of a test
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --------------------------------------------------------------------- mypy (types)
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests"]
+ignore_missing_imports = true       # fastembed/respx ship partial or no stubs
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false       # pragmatic: enforced on new app code by review
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# -------------------------------------------------------------------- pytest / cov
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --cov=app --cov-report=term-missing --cov-report=xml"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+markers = [
+    "slow: tests that load the embedding model or hit the network (deselect with -m 'not slow')",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/__init__.py"]
+
+[tool.coverage.report]
+# The suite sits at ~98%; the gate is set below that so a genuinely untestable edge
+# doesn't block a PR, but far enough up that dropping a module's tests fails CI.
+fail_under = 90
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

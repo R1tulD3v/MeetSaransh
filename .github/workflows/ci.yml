@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: ruff (lint)
+        run: ruff check --output-format=github .
+
+      - name: ruff (format)
+        run: ruff format --check .
+
+      - name: mypy (types)
+        run: mypy
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what the project claims to support; the ceiling catches
+        # deprecations before a runtime upgrade forces them on us.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: pytest (with the coverage gate)
+        # No API key and no network: every provider call is mocked, and the suite fails
+        # loudly rather than silently reaching out if a mock is ever forgotten.
+        env:
+          GROQ_API_KEY: ""
+        run: pytest
+
+      - name: Upload coverage
+        if: always() && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pip-audit==2.7.3
+
+      - name: pip-audit (known CVEs in pinned dependencies)
+        run: pip-audit --requirement requirements.txt --strict
+
+  docker:
+    name: Docker build & smoke test
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: meetsaransh:ci
+          # Skip the ~90 MB model prefetch in CI: it is a runtime optimisation, not
+          # something the build needs to prove.
+          build-args: PREFETCH_MODEL=0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the container
+        # No API key on purpose: this asserts the image boots and degrades to sample
+        # mode rather than crashing when the provider is not configured.
+        run: |
+          docker run -d --name meetsaransh -p 8000:8000 meetsaransh:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/api/v1/health > /dev/null; then
+              echo "up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "container did not become healthy"; docker logs meetsaransh; exit 1
+
+      - name: Smoke test the running container
+        run: |
+          set -euo pipefail
+
+          echo "--- health ---"
+          health=$(curl -fsS http://localhost:8000/api/v1/health)
+          echo "$health"
+          echo "$health" | grep -q '"database":true'
+
+          echo "--- sample meeting works with no API key ---"
+          curl -fsS -X POST http://localhost:8000/api/v1/meetings/sample \
+            -o /dev/null -w '%{http_code}\n' | grep -q 201
+
+          echo "--- security headers are present ---"
+          curl -fsSI http://localhost:8000/api/v1/health | grep -qi 'content-security-policy'
+
+          echo "--- metrics are exposed ---"
+          curl -fsS http://localhost:8000/metrics | grep -q 'meetsaransh_http_requests_total'
+
+          echo "--- docs are disabled in production ---"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/docs)" = "404"
+
+          echo "--- logs are structured JSON ---"
+          docker logs meetsaransh 2>&1 | grep -q '"request_id"'
+
+      - name: Container logs
+        if: always()
+        run: docker logs meetsaransh || true
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f meetsaransh || true
