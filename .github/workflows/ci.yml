@@ -76,6 +76,33 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+  evaluation:
+    name: RAG retrieval quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Retrieval regression gate
+        # Lexical mode on purpose: it needs no embedding model, so this job is fast,
+        # offline and deterministic. The dense and hybrid arms are run locally with
+        # `python -m evaluation.run`, where downloading a 90 MB model is acceptable and
+        # where the numbers are being read by a person rather than a threshold.
+        #
+        # The thresholds are floors, not targets: they catch a change that breaks
+        # retrieval or the grounding gate, without pretending a 26-question set can
+        # certify quality.
+        env:
+          GROQ_API_KEY: ""
+        run: python -m evaluation.run --mode lexical -k 1 3 --min-recall 0.75 --min-refusal 1.0
+
   security:
     name: Dependency audit
     runs-on: ubuntu-latest

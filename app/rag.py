@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import re
+from typing import Literal
 
 from . import config, embeddings, llm, prompts, storage
 
@@ -243,10 +244,40 @@ def _normalize(values: list[float]) -> list[float]:
 
 
 # --------------------------------------------------------------------- retrieval
-def retrieve(question: str, user_id: str, scope_meeting_id: str | None = None) -> dict:
+# How the dense and lexical scores are weighted. `hybrid` is what the app uses; the
+# other two exist so the evaluation harness can ablate one component at a time and show
+# that hybrid actually earns its complexity rather than being assumed to.
+RetrievalMode = Literal["hybrid", "dense", "lexical"]
+
+# Weight on the dense score when both components are available.
+#
+# Raised from 0.65 to 0.8 on evidence, not taste. `python -m evaluation.run
+# --alpha-sweep` over the 26-question labelled set showed 0.65 scoring 0.875 recall@3
+# on paraphrased questions -- identical to lexical-only -- because BM25's confident
+# wrong matches were outvoting the dense signal. At 0.8 that goes to 1.000, and MRR@3
+# improves from 0.904 to 0.923.
+#
+# The sweep keeps improving all the way to 1.0 (pure dense), and that is deliberately
+# NOT what ships. Two reasons: 26 questions over 5 chunks is far too small a sample to
+# justify deleting a retrieval component, and the lexical half does a job the metric
+# cannot see -- it is the only thing that still works when the embedding model fails to
+# load, and it matches exact tokens (names, ticket ids, error codes) that embeddings
+# blur together. 0.8 takes the measured win without betting the feature on it.
+HYBRID_ALPHA = 0.8
+
+
+def retrieve(
+    question: str,
+    user_id: str,
+    scope_meeting_id: str | None = None,
+    *,
+    mode: RetrievalMode = "hybrid",
+    alpha: float | None = None,
+) -> dict:
     """Hybrid retrieval over one user's indexed chunks.
 
     Returns {"ranked": [chunk+score...], "dense_best": float, "dense_used": bool}.
+    `mode` and `alpha` are evaluation levers: production always uses the defaults.
     """
     chunks = storage.get_chunks(user_id, scope_meeting_id)
     if not chunks:
@@ -260,7 +291,7 @@ def retrieve(question: str, user_id: str, scope_meeting_id: str | None = None) -
     dense_raw = [0.0] * len(chunks)
     dense_used = False
     have_vectors = any(c["embedding"] is not None for c in chunks)
-    if embeddings.available() and have_vectors:
+    if mode != "lexical" and embeddings.available() and have_vectors:
         qvec = embeddings.embed_one(question)
         if qvec is not None:
             import numpy as np
@@ -278,9 +309,15 @@ def retrieve(question: str, user_id: str, scope_meeting_id: str | None = None) -
 
     dense_norm = _normalize([max(0.0, d) for d in dense_raw])
 
-    # Combine. Favor dense when available; fall back to lexical-only otherwise.
-    alpha = 0.65 if dense_used else 0.0
-    combined = [alpha * dense_norm[i] + (1 - alpha) * bm25[i] for i in range(len(chunks))]
+    # Combine. Favour dense when available; fall back to lexical-only otherwise, which
+    # is also what happens whenever the embedding model cannot load.
+    if not dense_used:
+        weight = 0.0
+    elif mode == "dense":
+        weight = 1.0
+    else:
+        weight = HYBRID_ALPHA if alpha is None else alpha
+    combined = [weight * dense_norm[i] + (1 - weight) * bm25[i] for i in range(len(chunks))]
 
     for i, c in enumerate(chunks):
         c["score"] = combined[i]

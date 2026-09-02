@@ -1,0 +1,465 @@
+{
+  "_readme": [
+    "A hand-labelled evaluation set. Three meetings that deliberately overlap in",
+    "vocabulary (all three mention 'release', two mention 'latency', two mention",
+    "hiring), so retrieving the right one is a real decision rather than a keyword",
+    "coincidence.",
+    "",
+    "Questions are labelled with `expect` markers: substrings that MUST appear in a",
+    "retrieved chunk for it to count as relevant. Labelling by substring rather than by",
+    "chunk id means the labels survive a change to the chunking strategy, which is",
+    "exactly the kind of change this harness exists to evaluate.",
+    "",
+    "`off_topic` questions have no answer anywhere in the corpus. They measure the",
+    "honesty guarantee: the system must refuse rather than assemble something",
+    "plausible out of loosely-related excerpts.",
+    "",
+    "Questions marked `paraphrase` deliberately avoid the wording of the segment that",
+    "answers them ('basket' for 'cart', 'slogan' for 'tagline'). Those are where a",
+    "lexical-only retriever should struggle and a dense one should not -- without them",
+    "the ablation cannot tell the two apart, and every configuration scores 1.0."
+  ],
+  "meetings": [
+    {
+      "id": "eval-mobile",
+      "title": "Q3 Mobile Release Planning",
+      "segments": [
+        {
+          "start": 0.0,
+          "end": 9.0,
+          "text": "Thanks for joining. Three things today: the Q3 release scope, the payment bug, and hiring."
+        },
+        {
+          "start": 9.0,
+          "end": 21.0,
+          "text": "For Q3 the big items are offline mode, the redesigned onboarding, and push notifications."
+        },
+        {
+          "start": 21.0,
+          "end": 34.0,
+          "text": "I don't think we can land all three before the September freeze. Something has to give."
+        },
+        {
+          "start": 34.0,
+          "end": 47.0,
+          "text": "Let's cut push notifications from Q3. Offline mode is what enterprise customers keep asking for."
+        },
+        {
+          "start": 47.0,
+          "end": 58.0,
+          "text": "Agreed. Push moves to Q4 and offline mode becomes the headline feature for the release."
+        },
+        {
+          "start": 58.0,
+          "end": 72.0,
+          "text": "Next, the payment bug. We had that report of double charges on Android. Rahul, where are we on it?"
+        },
+        {
+          "start": 72.0,
+          "end": 88.0,
+          "text": "Root cause was a retry loop firing twice when the network drops mid-transaction. The fix is in review."
+        },
+        {
+          "start": 88.0,
+          "end": 101.0,
+          "text": "Rahul will have the payment fix in review by Thursday and QA runs the full payment regression before it ships."
+        },
+        {
+          "start": 101.0,
+          "end": 114.0,
+          "text": "How many customers were affected? We refunded eleven accounts so far, all of them manually."
+        },
+        {
+          "start": 114.0,
+          "end": 128.0,
+          "text": "Rahul also agreed to write up the incident and send the postmortem by Friday."
+        },
+        {
+          "start": 128.0,
+          "end": 141.0,
+          "text": "Last item, hiring. We have budget for one senior Android engineer this quarter."
+        },
+        {
+          "start": 141.0,
+          "end": 156.0,
+          "text": "That's still open actually. I need to confirm with finance whether the headcount carries over from Q2."
+        },
+        {
+          "start": 156.0,
+          "end": 168.0,
+          "text": "Priya will confirm the headcount with finance before we post the role."
+        }
+      ]
+    },
+    {
+      "id": "eval-infra",
+      "title": "Platform Infrastructure Review",
+      "segments": [
+        {
+          "start": 0.0,
+          "end": 12.0,
+          "text": "Today is the infrastructure review. Checkout latency, the database migration, and on-call."
+        },
+        {
+          "start": 12.0,
+          "end": 26.0,
+          "text": "Checkout p95 latency went from four hundred milliseconds to one point two seconds after the last deploy."
+        },
+        {
+          "start": 26.0,
+          "end": 40.0,
+          "text": "We traced it to an N plus one query in the cart serializer. Every line item fires its own lookup."
+        },
+        {
+          "start": 40.0,
+          "end": 53.0,
+          "text": "Meera will batch the cart queries and we expect p95 back under five hundred milliseconds."
+        },
+        {
+          "start": 53.0,
+          "end": 66.0,
+          "text": "On the database migration, we are moving the events table off the primary to its own instance."
+        },
+        {
+          "start": 66.0,
+          "end": 80.0,
+          "text": "The migration window is the second Sunday of next month, with a four hour maintenance budget."
+        },
+        {
+          "start": 80.0,
+          "end": 94.0,
+          "text": "We decided to run the migration in shadow mode for a week before cutting over."
+        },
+        {
+          "start": 94.0,
+          "end": 108.0,
+          "text": "Open question is whether the read replicas need resizing before the cutover. Nobody has measured that yet."
+        },
+        {
+          "start": 108.0,
+          "end": 121.0,
+          "text": "Finally on-call. The rotation is down to four people and pages have gone up thirty percent."
+        },
+        {
+          "start": 121.0,
+          "end": 135.0,
+          "text": "Meera will draft a proposal to add two engineers to the on-call rotation by the end of the month."
+        }
+      ]
+    },
+    {
+      "id": "eval-marketing",
+      "title": "Launch Marketing Sync",
+      "segments": [
+        {
+          "start": 0.0,
+          "end": 11.0,
+          "text": "Marketing sync for the offline mode launch. Positioning, the beta list, and the pricing page."
+        },
+        {
+          "start": 11.0,
+          "end": 25.0,
+          "text": "Positioning is reliability. The message is that the product keeps working when the network doesn't."
+        },
+        {
+          "start": 25.0,
+          "end": 38.0,
+          "text": "We agreed the launch tagline is Works Anywhere and we drop the technical framing entirely."
+        },
+        {
+          "start": 38.0,
+          "end": 52.0,
+          "text": "For the beta we have three hundred sign ups but only forty are on the enterprise plan."
+        },
+        {
+          "start": 52.0,
+          "end": 65.0,
+          "text": "Arjun will segment the beta list by plan tier and send enterprise users a separate invite."
+        },
+        {
+          "start": 65.0,
+          "end": 79.0,
+          "text": "On pricing, the question is whether offline mode is a paid add on or bundled into the enterprise tier."
+        },
+        {
+          "start": 79.0,
+          "end": 92.0,
+          "text": "We decided to bundle it into enterprise rather than charging separately, to drive upgrades."
+        },
+        {
+          "start": 92.0,
+          "end": 106.0,
+          "text": "That still leaves the pricing page rewrite. Nobody owns that yet and the launch is in six weeks."
+        },
+        {
+          "start": 106.0,
+          "end": 118.0,
+          "text": "Arjun will own the pricing page rewrite and have a draft ready two weeks before launch."
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q-push-cut",
+      "question": "Why was push notifications delayed?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "cut push notifications from Q3"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-payment-cause",
+      "question": "What caused the double charges on Android?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "retry loop firing twice"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-rahul-actions",
+      "question": "What are Rahul's action items?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "payment fix in review by Thursday",
+        "write up the incident"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-refunds",
+      "question": "How many customers did we refund?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "refunded eleven accounts"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-headcount",
+      "question": "Who is confirming the hiring headcount?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "confirm the headcount with finance"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-release-scope",
+      "question": "What is the headline feature for the Q3 release?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "offline mode becomes the headline feature"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-latency-cause",
+      "question": "Why did checkout get slower?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "N plus one query in the cart serializer"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-latency-owner",
+      "question": "Who is fixing the checkout latency?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "Meera will batch the cart queries"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-migration-window",
+      "question": "When is the database migration happening?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "second Sunday of next month"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-migration-approach",
+      "question": "How are we de-risking the database migration?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "shadow mode for a week"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-replicas",
+      "question": "What is still unresolved about the read replicas?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "read replicas need resizing"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-oncall",
+      "question": "What are we doing about the on-call rotation?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "add two engineers to the on-call rotation"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-tagline",
+      "question": "What tagline did we pick for the launch?",
+      "meeting_id": "eval-marketing",
+      "expect": [
+        "launch tagline is Works Anywhere"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-pricing-decision",
+      "question": "Are we charging extra for offline mode?",
+      "meeting_id": "eval-marketing",
+      "expect": [
+        "bundle it into enterprise"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-beta-numbers",
+      "question": "How many beta sign ups do we have?",
+      "meeting_id": "eval-marketing",
+      "expect": [
+        "three hundred sign ups"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-pricing-page",
+      "question": "Who owns the pricing page rewrite?",
+      "meeting_id": "eval-marketing",
+      "expect": [
+        "Arjun will own the pricing page rewrite"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-cross-latency",
+      "question": "What is the target for checkout p95 latency?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "under five hundred milliseconds"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "q-cross-enterprise",
+      "question": "What do enterprise customers keep asking for?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "enterprise customers keep asking for"
+      ],
+      "paraphrase": false
+    },
+    {
+      "id": "p-basket-slow",
+      "question": "Why was the basket page dragging?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "N plus one query in the cart serializer"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-slogan",
+      "question": "What slogan did we settle on?",
+      "meeting_id": "eval-marketing",
+      "expect": [
+        "launch tagline is Works Anywhere"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-money-back",
+      "question": "How many people got their money back?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "refunded eleven accounts"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-billed-twice",
+      "question": "What made the app bill people more than once?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "retry loop firing twice"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-slipped",
+      "question": "Which capability slipped to a later quarter?",
+      "meeting_id": "eval-mobile",
+      "expect": [
+        "cut push notifications from Q3"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-pay-extra",
+      "question": "Will customers be charged more for working without internet?",
+      "meeting_id": "eval-marketing",
+      "expect": [
+        "bundle it into enterprise"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-pager-load",
+      "question": "What is being done about how often engineers get woken up?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "add two engineers to the on-call rotation"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "p-downtime",
+      "question": "How long will the system be unavailable during the move?",
+      "meeting_id": "eval-infra",
+      "expect": [
+        "four hour maintenance budget"
+      ],
+      "paraphrase": true
+    }
+  ],
+  "off_topic": [
+    {
+      "id": "o-france",
+      "question": "What is the capital of France?"
+    },
+    {
+      "id": "o-pizza",
+      "question": "What is the best pizza topping?"
+    },
+    {
+      "id": "o-weather",
+      "question": "Will it rain in Bangalore tomorrow?"
+    },
+    {
+      "id": "o-recipe",
+      "question": "How do I make sourdough bread?"
+    },
+    {
+      "id": "o-football",
+      "question": "Who won the football World Cup?"
+    },
+    {
+      "id": "o-salary",
+      "question": "What is the average salary of a dentist?"
+    }
+  ]
+}

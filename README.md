@@ -39,9 +39,11 @@ across all your meetings** with grounded, cited answers.
   every meeting query filtered by owner in SQL.
 - **Background transcription** - uploads return in milliseconds and are processed by a
   worker pool, with live status in the UI and recovery after a restart.
-- **376 tests, 98% coverage**, every provider call mocked - the suite runs offline.
-- **CI on every push**: lint, format, types, tests + coverage gate, dependency audit,
-  Docker build and a container smoke test.
+- **A measured retrieval pipeline** - a labelled evaluation set, an ablation, and a
+  regression gate in CI, not just an assertion that the RAG is good.
+- **459 tests, 98% coverage**, every provider call mocked - the suite runs offline.
+- **CI on every push**: lint, format, types, tests + coverage gate, a retrieval-quality
+  regression gate, dependency audit, Docker build and a container smoke test.
 - **Containerized**: multi-stage build, non-root user, real health check.
 - **Rate limited** per client, with the tightest budget on the endpoints that spend money.
 - **Content-validated uploads** - magic bytes, not just the file extension.
@@ -107,6 +109,7 @@ pre-commit install          # run the same checks CI runs, before each commit
 | Format | `ruff format .` |
 | Type-check | `mypy` |
 | Audit dependencies | `pip-audit -r requirements.txt --strict` |
+| Score retrieval quality | `python -m evaluation.run` |
 
 The suite needs **no API key and no network**: Groq calls are mocked with `respx`, and
 the embedding model is forced unavailable so no test downloads it. Tests that need the
@@ -133,6 +136,65 @@ The interesting engineering is here, so it's worth spelling out:
 - **Storage:** embeddings are stored as `float32` blobs in SQLite; retrieval is
   brute-force cosine in numpy. At this scale that's correct and simple - an ANN index
   (HNSW/IVFFlat) is the scaling path, not a demo requirement.
+
+---
+
+## Measuring the retrieval pipeline
+
+"I built RAG" and "I measured my RAG" are different claims. `evaluation/` holds a
+hand-labelled set of **26 questions over 3 deliberately overlapping meetings**, plus 6
+off-topic questions that must be refused.
+
+```bash
+python -m evaluation.run                 # ablation: hybrid vs dense vs lexical
+python -m evaluation.run --alpha-sweep   # tune the hybrid weight
+python -m evaluation.run --mode lexical  # deterministic: no model, no network
+python -m evaluation.run --judge         # add LLM-as-judge faithfulness (needs a key)
+```
+
+**What it reports:** hit rate, recall, precision and MRR at several values of k;
+how often the top-ranked chunk came from the *right meeting*; refusal accuracy on the
+off-topic set; and the false-refusal rate on the answerable set.
+
+Four design decisions worth defending:
+
+- **Labels are substrings, not chunk ids.** Chunking is one of the things being
+  evaluated, so labels that break whenever the chunker changes would be useless.
+- **Recall is reported separately for literal and paraphrased questions.** On questions
+  that reuse the transcript's own words, BM25 alone already scores near-perfectly, so an
+  ablation run only on those shows no difference between configurations and quietly
+  justifies whichever one happened to ship.
+- **Refusal accuracy is always shown next to the false-refusal rate.** A system that
+  refuses everything scores a perfect 1.0 on the first number and is useless.
+- **k is swept, not fixed.** With a small corpus a generous k retrieves everything and
+  every configuration scores a meaningless 1.000.
+
+### It already changed a decision
+
+The hybrid weight shipped at `alpha = 0.65`. The sweep showed it scoring **0.875 recall
+on paraphrased questions - identical to lexical-only** - because BM25's confident wrong
+matches were outvoting the dense signal. At `0.8` that reaches 1.000 and MRR@3 improves
+from 0.904 to 0.923, so **0.8 is what ships now**.
+
+| Configuration | recall@3 | MRR@3 | right meeting @1 | paraphrase recall@3 |
+| --- | --- | --- | --- | --- |
+| lexical only | 0.885 | 0.865 | 0.885 | 0.625 |
+| hybrid, alpha=0.65 | 0.962 | 0.904 | 0.885 | 0.875 |
+| **hybrid, alpha=0.80** | **1.000** | **0.923** | 0.885 | **1.000** |
+| dense only | 1.000 | 0.955 | 0.962 | 1.000 |
+
+The sweep keeps improving all the way to `alpha = 1.0` (pure dense), and that is
+deliberately **not** what ships. Two reasons: 26 questions over 5 chunks is far too small
+a sample to justify deleting a retrieval component, and the lexical half does a job this
+metric cannot see - it is the only thing that still works when the embedding model fails
+to load, and it matches exact tokens (names, ticket ids, error codes) that embeddings
+blur together. `0.8` takes the measured win without betting the feature on it.
+
+**Honest limits of this harness.** 26 questions over 5 chunks is enough to catch a
+regression and to justify a weight change. It is not enough to certify a retrieval
+architecture, and the corpus is synthetic. The CI gate runs lexical-only so it stays
+deterministic and needs no model download; the dense and hybrid arms are run locally,
+where the numbers are read by a person rather than by a threshold.
 
 ---
 
@@ -179,7 +241,8 @@ app/
   llm.py           # shared chat client + retry/backoff
   embeddings.py    # local dense embeddings (fastembed)
 static/            # index.html, style.css, app.js  (no framework)
-tests/             # 376 tests, providers mocked, no network
+tests/             # 459 tests, providers mocked, no network
+evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
 ops/               # Prometheus scrape config
 data/sample/       # bundled sample meeting (offline demo)
 ```
@@ -398,15 +461,16 @@ sum(rate(meetsaransh_rate_limited_total[5m])) by (route)
 
 Next up, in order:
 
-1. **RAG evaluation harness** - recall@k, MRR, and faithfulness, with an ablation of
-   hybrid vs dense-only vs lexical-only.
-2. **Analytics dashboard** - action items by owner/status, decisions over time.
-3. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
+1. **Analytics dashboard** - action items by owner/status, decisions over time.
+2. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
    plus Redis so the rate limiter and job queue are shared across processes.
+3. **Query rewriting and reranking** - now worth doing, because the harness can say
+   whether they actually help rather than assuming they do.
 4. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap.
 5. **Speaker diarization** - label "Speaker 1 -> Priya".
 
-Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling.
+Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling
+&nbsp; [x] measured retrieval with a CI regression gate.
 
 ---
 

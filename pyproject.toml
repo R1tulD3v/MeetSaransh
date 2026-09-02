@@ -47,7 +47,7 @@ quote-style = "double"
 # --------------------------------------------------------------------- mypy (types)
 [tool.mypy]
 python_version = "3.12"
-files = ["app", "tests"]
+files = ["app", "tests", "evaluation"]
 ignore_missing_imports = true       # fastembed/respx ship partial or no stubs
 warn_unused_ignores = true
 warn_redundant_casts = true
