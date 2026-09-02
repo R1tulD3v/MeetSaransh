@@ -25,11 +25,12 @@ across all your meetings** with grounded, cited answers.
   invent** them. Reassign, re-date, reword or tick them off inline, and the dashboard
   follows. Rows a human has touched are marked `edited`, so "the model said Priya owns
   this" stays distinguishable from "we decided Priya owns this".
-- **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with
-  the question **rewritten into retrieval vocabulary** first, a **streamed** answer, and
-  **clickable citations** that jump to the exact transcript moment. Citations arrive *before* the first token, so the sources are on screen while
-  the answer is still being written. Honest by design: it says *"I couldn't find
-  anything about that"* when a topic wasn't discussed, instead of guessing.
+- **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with the
+  question **rewritten into retrieval vocabulary** first, a **streamed** answer, and
+  **clickable citations** that jump to the exact transcript moment. Citations arrive
+  *before* the first token, so the sources are on screen while the answer is still being
+  written. Honest by design: it says *"I couldn't find anything about that"* when a topic
+  wasn't discussed, instead of guessing.
 - **Click-to-seek** everywhere - timestamps in the summary, transcript, and chat citations
   all seek the audio / scroll the transcript.
 - **Transcript search** with match highlighting.
@@ -147,10 +148,16 @@ The interesting engineering is here, so it's worth spelling out:
 
 ### Streaming
 
-`POST /chat/stream` returns Server-Sent Events. Measured against live Groq: **citations
-at 0.11s, first token at 1.28s** - so the sources sit on screen for over a second before
-any prose appears, and a reader can start checking the evidence instead of watching a
-spinner. A mid-stream failure also still leaves them with the excerpts.
+`POST /chat/stream` returns Server-Sent Events. Measured against live Groq with query
+rewriting off: **citations at 0.11s, first token at 1.28s** - so the sources sit on
+screen for over a second before any prose appears, and a reader can start checking the
+evidence instead of watching a spinner. A mid-stream failure also still leaves them with
+the excerpts.
+
+With rewriting on (the default) both numbers shift about 1.6s later, because retrieval
+now waits on an LLM call. That is a real trade the section below spells out rather than
+hides: better sources, slower first paint, one environment variable to choose between
+them.
 
 - **SSE, not WebSockets.** The traffic is one-directional and short-lived. SSE is plain
   HTTP, so it inherits the same auth dependency, rate limit and error envelope as every
