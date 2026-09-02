@@ -389,3 +389,44 @@ mark { background: #ffe58a; color: inherit; border-radius: 3px; }
 @media (prefers-reduced-motion: reduce) {
   .msg-answer.streaming::after { animation: none; opacity: .5; }
 }
+
+
+/* ------------------------------------------------------------- editable actions */
+.actions .action-check { width: 30px; }
+.actions .action-check input { cursor: pointer; }
+
+.action-done .cell-view,
+.action-done .owner-chip { opacity: .55; text-decoration: line-through; }
+
+/* A brief tint on save, so an inline edit confirms itself without a toast. */
+.action-saved { background: rgba(18, 138, 90, .10); }
+.actions tr { transition: background .25s ease; }
+
+td.editable .cell-view,
+td.editable .owner-chip { cursor: text; border-radius: 5px; }
+td.editable .cell-view:hover,
+td.editable .owner-chip:hover { box-shadow: inset 0 0 0 1px var(--line); }
+td.editable .cell-view:focus-visible,
+td.editable .owner-chip:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+.cell-input {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--brand);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+.edited-mark {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .actions tr { transition: none; }
+}

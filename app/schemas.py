@@ -242,7 +242,8 @@ class AnalyticsOverview(BaseModel):
 class OwnerLoad(BaseModel):
     owner: str
     total: int
-    with_due_date: int
+    completed: int = 0
+    with_due_date: int = 0
 
 
 class DayPoint(BaseModel):
@@ -257,7 +258,14 @@ class TopicCount(BaseModel):
     meetings: int
 
 
+class Completion(BaseModel):
+    total: int
+    completed: int
+    open: int
+
+
 class UnassignedItem(BaseModel):
+    id: str = ""
     task: str
     timestamp: str = ""
     meeting_id: str
@@ -268,8 +276,42 @@ class AnalyticsResponse(BaseModel):
     """The whole dashboard in one payload -- the page renders as a unit."""
 
     overview: AnalyticsOverview
+    completion: Completion
     by_owner: list[OwnerLoad]
     over_time: list[DayPoint]
     top_topics: list[TopicCount]
     unassigned: list[UnassignedItem]
     window_days: int
+
+
+# ------------------------------------------------------------------------ action items
+ActionStatus = Literal["open", "done"]
+
+
+class ActionItemRow(BaseModel):
+    """An action item as workflow state, not as summary text.
+
+    `edited` records whether a human has touched it since extraction, which is what
+    lets the UI distinguish "the model said Priya owns this" from "we decided Priya
+    owns this" -- the first question anyone asks of an AI-generated task list.
+    """
+
+    id: str
+    meeting_id: str
+    ord: int
+    task: str
+    owner: str
+    due: str
+    timestamp: str = ""
+    status: ActionStatus = "open"
+    edited: bool = False
+    updated_at: str | None = None
+
+
+class ActionItemUpdate(BaseModel):
+    """A partial update. Every field is optional; unset fields are left alone."""
+
+    task: str | None = Field(default=None, min_length=1, max_length=500)
+    owner: str | None = Field(default=None, min_length=1, max_length=120)
+    due: str | None = Field(default=None, min_length=1, max_length=120)
+    status: ActionStatus | None = None

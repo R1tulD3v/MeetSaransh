@@ -136,6 +136,9 @@ def _run_job(meeting_id: str, audio_path: Path, title: str, request_id: str) -> 
         summary = summarize.summarize(title, transcript["timestamped_text"])
 
         storage.complete_meeting(meeting_id, transcript=transcript, summary=summary)
+        # Materialise the extracted tasks as editable rows. The summary keeps its own
+        # copy as the immutable record of what the model said.
+        storage.replace_action_items(meeting_id, summary.get("action_items", []))
 
         # Indexing is best-effort: the meeting is already saved and viewable, so an
         # embedding failure must not turn a successful transcription into an error.

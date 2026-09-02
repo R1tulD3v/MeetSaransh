@@ -136,6 +136,50 @@ _MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
         """,
     ),
+    (
+        6,
+        # Action items become rows a user can edit, instead of values buried in the
+        # summary JSON.
+        #
+        # `summary_json` deliberately keeps its copy. The two are not duplicates: the
+        # JSON is the immutable record of what the model extracted from the transcript,
+        # and this table is the mutable workflow state on top of it. Keeping both means
+        # "who did the model say owns this" and "who owns it now" stay separable, which
+        # is exactly the question anyone auditing an AI-generated task list asks.
+        #
+        # The backfill walks existing summaries with JSON1 so meetings processed before
+        # this migration arrive with their action items already editable.
+        """
+        CREATE TABLE IF NOT EXISTS action_items (
+            id          TEXT PRIMARY KEY,
+            meeting_id  TEXT NOT NULL,
+            ord         INTEGER NOT NULL,
+            task        TEXT NOT NULL,
+            owner       TEXT NOT NULL DEFAULT 'Unassigned',
+            due         TEXT NOT NULL DEFAULT 'Not specified',
+            timestamp   TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'open',
+            edited      INTEGER NOT NULL DEFAULT 0,
+            updated_at  TEXT,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_actions_meeting ON action_items(meeting_id, ord);
+        CREATE INDEX IF NOT EXISTS idx_actions_status ON action_items(status);
+
+        INSERT INTO action_items (id, meeting_id, ord, task, owner, due, timestamp)
+        SELECT
+            lower(hex(randomblob(6))),
+            m.id,
+            item.key,
+            TRIM(json_extract(item.value, '$.task')),
+            COALESCE(NULLIF(TRIM(json_extract(item.value, '$.owner')), ''), 'Unassigned'),
+            COALESCE(NULLIF(TRIM(json_extract(item.value, '$.due')), ''), 'Not specified'),
+            COALESCE(json_extract(item.value, '$.timestamp'), '')
+        FROM meetings m,
+             json_each(json_extract(m.summary_json, '$.action_items')) AS item
+        WHERE TRIM(COALESCE(json_extract(item.value, '$.task'), '')) <> '';
+        """,
+    ),
 ]
 
 SCHEMA_VERSION = _MIGRATIONS[-1][0]
@@ -607,3 +651,106 @@ def healthcheck() -> bool:
         return int(version) == SCHEMA_VERSION
     except sqlite3.Error:
         return False
+
+
+# ------------------------------------------------------------------------ action items
+# Mutable workflow state on top of the immutable summary. See migration 6 for why both
+# exist: `summary_json` records what the model extracted, these rows record what the
+# team decided to do about it.
+OPEN = "open"
+DONE = "done"
+ACTION_STATUSES = (OPEN, DONE)
+
+
+def replace_action_items(meeting_id: str, items: list[dict]) -> None:
+    """Install the extracted action items for a freshly-processed meeting.
+
+    Only ever called on completion, before anyone can have edited anything -- so it
+    replaces wholesale rather than trying to merge, and reprocessing a meeting is a
+    clean slate rather than a half-merged one.
+    """
+    with _connect() as conn:
+        conn.execute("DELETE FROM action_items WHERE meeting_id = ?", (meeting_id,))
+        conn.executemany(
+            """INSERT INTO action_items
+               (id, meeting_id, ord, task, owner, due, timestamp, status, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+            [
+                (
+                    new_id(),
+                    meeting_id,
+                    ordinal,
+                    (item.get("task") or "").strip(),
+                    (item.get("owner") or "Unassigned").strip() or "Unassigned",
+                    (item.get("due") or "Not specified").strip() or "Not specified",
+                    (item.get("timestamp") or "").strip(),
+                    _utc_now(),
+                )
+                for ordinal, item in enumerate(items)
+                if (item.get("task") or "").strip()
+            ],
+        )
+
+
+def list_action_items(meeting_id: str, user_id: str) -> list[dict]:
+    """A meeting's action items, oldest-first, scoped to the owner of the meeting."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT a.* FROM action_items a
+               JOIN meetings m ON m.id = a.meeting_id
+               WHERE a.meeting_id = ? AND m.user_id = ?
+               ORDER BY a.ord ASC""",
+            (meeting_id, user_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_action_item(item_id: str, user_id: str) -> dict | None:
+    """Fetch one action item the user owns, via its meeting. Someone else's is None."""
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT a.* FROM action_items a
+               JOIN meetings m ON m.id = a.meeting_id
+               WHERE a.id = ? AND m.user_id = ?""",
+            (item_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_action_item(item_id: str, user_id: str, changes: dict) -> dict | None:
+    """Apply a partial update. Returns the updated row, or None if it isn't the user's.
+
+    The ownership check is part of the UPDATE's WHERE clause rather than a separate
+    read: a check-then-write would be a race, and the race would let one user edit
+    another's task.
+    """
+    allowed = {"task", "owner", "due", "status"}
+    fields = {k: v for k, v in changes.items() if k in allowed and v is not None}
+    if not fields:
+        return get_action_item(item_id, user_id)
+
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    params: list[Any] = list(fields.values())
+    with _connect() as conn:
+        changed = conn.execute(
+            f"""UPDATE action_items
+                SET {assignments}, edited = 1, updated_at = ?
+                WHERE id = ? AND meeting_id IN (
+                    SELECT id FROM meetings WHERE user_id = ?
+                )""",
+            (*params, _utc_now(), item_id, user_id),
+        ).rowcount
+    return get_action_item(item_id, user_id) if changed else None
+
+
+def count_action_items(user_id: str, status: str | None = None) -> int:
+    query = (
+        "SELECT COUNT(*) AS n FROM action_items a "
+        "JOIN meetings m ON m.id = a.meeting_id WHERE m.user_id = ?"
+    )
+    params: tuple[Any, ...] = (user_id,)
+    if status:
+        query += " AND a.status = ?"
+        params = (user_id, status)
+    with _connect() as conn:
+        return int(conn.execute(query, params).fetchone()["n"])

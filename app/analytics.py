@@ -60,7 +60,11 @@ def overview(user_id: str) -> dict:
 
 
 def action_items_by_owner(user_id: str, limit: int = 10) -> list[dict]:
-    """Who is carrying the work, and how much of it has a due date.
+    """Who is carrying the work, how much of it is done, and how much has a due date.
+
+    Reads the normalised `action_items` table rather than the summary JSON, so it
+    reflects what the team has since decided (reassignments, completions) rather than
+    only what the model originally extracted.
 
     `Unassigned` is deliberately included rather than filtered out -- it is usually the
     most actionable row on the page, because it is the work nobody has picked up.
@@ -70,20 +74,18 @@ def action_items_by_owner(user_id: str, limit: int = 10) -> list[dict]:
             conn,
             """
             SELECT
-                COALESCE(NULLIF(TRIM(json_extract(item.value, '$.owner')), ''), ?) AS owner,
+                a.owner AS owner,
                 COUNT(*) AS total,
-                SUM(CASE
-                        WHEN COALESCE(TRIM(json_extract(item.value, '$.due')), '') IN ('', ?)
-                        THEN 0 ELSE 1
-                    END) AS with_due_date
-            FROM meetings m,
-                 json_each(json_extract(m.summary_json, '$.action_items')) AS item
-            WHERE m.user_id = ? AND m.status = 'done'
-            GROUP BY owner
+                SUM(CASE WHEN a.status = 'done' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN a.due <> ? THEN 1 ELSE 0 END) AS with_due_date
+            FROM action_items a
+            JOIN meetings m ON m.id = a.meeting_id
+            WHERE m.user_id = ?
+            GROUP BY a.owner
             ORDER BY total DESC, owner ASC
             LIMIT ?
             """,
-            (UNASSIGNED, NO_DUE_DATE, user_id, limit),
+            (NO_DUE_DATE, user_id, limit),
         )
 
 
@@ -142,27 +144,48 @@ def top_topics(user_id: str, limit: int = 8) -> list[dict]:
 
 
 def unassigned_action_items(user_id: str, limit: int = 8) -> list[dict]:
-    """The work with no owner, newest first -- the dashboard's one call to action."""
+    """Open work with no owner, newest first -- the dashboard's one call to action.
+
+    Completed items are excluded: an unowned task that is already done is history, not
+    a loose end, and listing it would train the reader to ignore the panel.
+    """
     with storage._connect() as conn:
         return _rows(
             conn,
             """
             SELECT
-                json_extract(item.value, '$.task')      AS task,
-                json_extract(item.value, '$.timestamp') AS timestamp,
-                m.id                                    AS meeting_id,
-                m.title                                 AS meeting_title
-            FROM meetings m,
-                 json_each(json_extract(m.summary_json, '$.action_items')) AS item
-            WHERE m.user_id = ?
-              AND m.status = 'done'
-              AND COALESCE(TRIM(json_extract(item.value, '$.owner')), '') IN ('', ?)
-              AND TRIM(COALESCE(json_extract(item.value, '$.task'), '')) <> ''
-            ORDER BY m.created_at DESC
+                a.id        AS id,
+                a.task      AS task,
+                a.timestamp AS timestamp,
+                m.id        AS meeting_id,
+                m.title     AS meeting_title
+            FROM action_items a
+            JOIN meetings m ON m.id = a.meeting_id
+            WHERE m.user_id = ? AND a.owner = ? AND a.status = 'open'
+            ORDER BY m.created_at DESC, a.ord ASC
             LIMIT ?
             """,
             (user_id, UNASSIGNED, limit),
         )
+
+
+def completion(user_id: str) -> dict:
+    """Open versus done across every meeting -- the one genuine progress metric here."""
+    with storage._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN a.status = 'done' THEN 1 ELSE 0 END) AS completed
+            FROM action_items a
+            JOIN meetings m ON m.id = a.meeting_id
+            WHERE m.user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    total = int(row["total"] or 0)
+    completed = int(row["completed"] or 0)
+    return {"total": total, "completed": completed, "open": total - completed}
 
 
 def fill_missing_days(rows: list[dict], days: int) -> list[dict]:
@@ -197,6 +220,7 @@ def dashboard(user_id: str, *, days: int = 30) -> dict:
     """
     return {
         "overview": overview(user_id),
+        "completion": completion(user_id),
         "by_owner": action_items_by_owner(user_id),
         "over_time": fill_missing_days(meetings_over_time(user_id, days), days),
         "top_topics": top_topics(user_id),

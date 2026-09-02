@@ -382,6 +382,7 @@ def api_create_sample(user: CurrentUser) -> schemas.Meeting:
         audio_ext=None,
         status="done",
     )
+    storage.replace_action_items(mid, summary.get("action_items", []))
     _safe_index(mid)
     return schemas.Meeting(**_require_meeting(mid, user))
 
@@ -401,6 +402,40 @@ def api_get_audio(meeting_id: str, user: CurrentUser) -> FileResponse:
 def api_export_markdown(meeting_id: str, user: CurrentUser) -> str:
     """Export the summary + action items as copy-ready Markdown (close-the-loop)."""
     return _to_markdown(_require_meeting(meeting_id, user))
+
+
+# ------------------------------------------------------------------------ action items
+@api.get(
+    "/meetings/{meeting_id}/action-items",
+    response_model=list[schemas.ActionItemRow],
+    tags=["action items"],
+)
+def api_list_action_items(meeting_id: str, user: CurrentUser) -> list[schemas.ActionItemRow]:
+    """The editable action items for one meeting."""
+    _require_meeting(meeting_id, user)  # 404s for someone else's meeting
+    return [schemas.ActionItemRow(**i) for i in storage.list_action_items(meeting_id, user["id"])]
+
+
+@api.patch(
+    "/action-items/{item_id}",
+    response_model=schemas.ActionItemRow,
+    tags=["action items"],
+)
+def api_update_action_item(
+    item_id: str, payload: schemas.ActionItemUpdate, user: CurrentUser
+) -> schemas.ActionItemRow:
+    """Reassign, re-date, reword, or complete an action item.
+
+    PATCH rather than PUT: a client that only wants to tick a checkbox should not have
+    to send back the whole row and risk clobbering a field someone else just changed.
+    """
+    updated = storage.update_action_item(
+        item_id, user["id"], payload.model_dump(exclude_unset=True, exclude_none=True)
+    )
+    if updated is None:
+        raise APIError("Action item not found.", status_code=404)
+    log.info("action item updated", extra={"item_id": item_id, "user_id": user["id"]})
+    return schemas.ActionItemRow(**updated)
 
 
 # --------------------------------------------------------------------------- analytics

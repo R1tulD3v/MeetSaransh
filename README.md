@@ -20,8 +20,11 @@ across all your meetings** with grounded, cited answers.
 - **Upload audio** (`.mp3 .wav .m4a .mp4 .webm .ogg .flac ...`) -> transcript + summary.
 - **Layered summary** - TL;DR -> key decisions -> action items -> open questions -> topic
   timeline. Depth, not one flat paragraph.
-- **Grounded action items** - each with an owner (or `Unassigned`), a due date (or
-  `Not specified`), and a `[mm:ss]` timestamp. The prompt is told **not to invent** them.
+- **Editable action items** - each extracted with an owner (or `Unassigned`), a due
+  date (or `Not specified`), and a `[mm:ss]` timestamp; the prompt is told **not to
+  invent** them. Reassign, re-date, reword or tick them off inline, and the dashboard
+  follows. Rows a human has touched are marked `edited`, so "the model said Priya owns
+  this" stays distinguishable from "we decided Priya owns this".
 - **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with a
   **streamed** answer and **clickable citations** that jump to the exact transcript
   moment. Citations arrive *before* the first token, so the sources are on screen while
@@ -46,7 +49,7 @@ across all your meetings** with grounded, cited answers.
   worker pool, with live status in the UI and recovery after a restart.
 - **A measured retrieval pipeline** - a labelled evaluation set, an ablation, and a
   regression gate in CI, not just an assertion that the RAG is good.
-- **527 tests, 98% coverage**, every provider call mocked - the suite runs offline.
+- **561 tests, 98% coverage**, every provider call mocked - the suite runs offline.
 - **CI on every push**: lint, format, types, tests + coverage gate, a retrieval-quality
   regression gate, dependency audit, Docker build and a container smoke test.
 - **Containerized**: multi-stage build, non-root user, real health check.
@@ -251,11 +254,38 @@ where the numbers are read by a person rather than by a threshold.
 
 ---
 
+## Action items as state, not text
+
+Action items live in their own table as well as in the summary JSON, and the two are
+deliberately **not** duplicates:
+
+- `summary_json` is the **immutable record of what the model extracted** from the
+  transcript.
+- `action_items` is the **mutable workflow state** on top of it.
+
+Keeping both means "who did the model say owns this" and "who owns it now" stay
+separable - which is the first question anyone auditing an AI-generated task list asks.
+An `edited` flag marks every row a human has touched, and the UI shows it. Editing a
+task never rewrites the summary.
+
+Migration 6 creates the table and **backfills it from every existing summary** with
+JSON1, so meetings processed before the feature existed arrive already editable rather
+than stranded as text in a blob.
+
+`PATCH` rather than `PUT`: a client that only wants to tick a checkbox should not have
+to send the whole row back and risk clobbering a field someone else just changed. The
+ownership check lives inside the `UPDATE ... WHERE` clause rather than in a preceding
+read, because a check-then-write is a race, and that race would let one user edit
+another's task.
+
+---
+
 ## The insights dashboard
 
-Every number is a SQL aggregation over the stored summaries, using SQLite's JSON1
-extension to walk into `summary_json` rather than loading every meeting into Python and
-counting in a loop. That is not only tidier: the loop costs one full transcript read per
+Every number is a SQL aggregation. Workload and completion read the normalised
+`action_items` table, so the charts follow what the team decided rather than only what
+the model first extracted; topics and counts use SQLite's JSON1 to walk into
+`summary_json` rather than loading every meeting into Python and counting in a loop. That is not only tidier: the loop costs one full transcript read per
 meeting, so it degrades exactly as a user accumulates the meetings that make the
 dashboard worth looking at.
 
@@ -320,7 +350,7 @@ app/
   llm.py           # shared chat client + retry/backoff
   embeddings.py    # local dense embeddings (fastembed)
 static/            # index.html, style.css, app.js  (no framework)
-tests/             # 527 tests, providers mocked, no network
+tests/             # 561 tests, providers mocked, no network
 evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
 ops/               # Prometheus scrape config
 data/sample/       # bundled sample meeting (offline demo)
@@ -344,6 +374,8 @@ Every route below except `/health` and `/metrics` requires
 | `GET`  | `/api/v1/auth/me` | the current account |
 | `POST` | `/api/v1/meetings` | upload audio -> **202**, queued for background processing |
 | `POST` | `/api/v1/meetings/sample` | create the bundled sample (no key needed) |
+| `GET`  | `/api/v1/meetings/{id}/action-items` | the editable action items |
+| `PATCH` | `/api/v1/action-items/{id}` | reassign, re-date, reword, or complete one |
 | `GET`  | `/api/v1/meetings` | paginated list (`?limit=&offset=`) |
 | `GET`  | `/api/v1/meetings/{id}` | full meeting; also the **status polling** endpoint |
 | `GET`  | `/api/v1/meetings/{id}/audio` , `/export` | stream audio , Markdown export |
@@ -543,7 +575,8 @@ sum(rate(meetsaransh_rate_limited_total[5m])) by (route)
 Next up, in order:
 
 1. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
-   plus Redis so the rate limiter and job queue are shared across processes.
+   plus Redis so the rate limiter and job queue are shared across processes. Needs
+   Docker or a hosted Postgres to develop against - it is not written blind.
 2. **Query rewriting** - the remaining half of the retrieval-quality work, and now
    measurable rather than assumed.
 3. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap (needs
@@ -554,7 +587,8 @@ Next up, in order:
 
 Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling
 &nbsp; [x] measured retrieval with a CI regression gate &nbsp; [x] insights dashboard
-&nbsp; [x] streamed answers &nbsp; [x] reranking (measured, shipped off).
+&nbsp; [x] streamed answers &nbsp; [x] reranking (measured, shipped off)
+&nbsp; [x] editable action items.
 
 ---
 
@@ -574,6 +608,12 @@ Stated plainly, because a README that only lists strengths is not informative:
   provider, which this project does not have.
 - **Roles exist but nothing uses them.** `require_admin` is implemented and tested;
   there is simply no admin-only endpoint yet.
+- **Action items are per-meeting, with no cross-meeting deduplication.** The same task
+  agreed in two meetings is two rows. Merging them needs a similarity judgement the app
+  does not currently make.
+- **`due` is free text**, exactly as the model produced it ("Next Friday", "end of the
+  month"). Parsing it into real dates would let the dashboard sort and alert on
+  deadlines, and would also be the first place the app started guessing.
 - SQLite + local files: single-writer, and the audio lives on the container's volume
   rather than object storage.
 - The RAG refusal gate is deliberately lenient; the LLM prompt does the final grounding,

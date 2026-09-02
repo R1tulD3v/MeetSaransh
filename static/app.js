@@ -449,12 +449,12 @@ function renderMeeting(m) {
     audio.classList.add("hidden");
   }
 
-  renderSummary(m.summary);
+  renderSummary(m.summary, m);
   renderTranscript(m.segments);
   switchTab("summary");
 }
 
-function renderSummary(s) {
+function renderSummary(s, m) {
   s = s || {};
   // TL;DR
   const tldr = $("#tldr");
@@ -479,33 +479,10 @@ function renderSummary(s) {
     dec.appendChild(ul);
   }
 
-  // Action items table
-  const act = $("#actions");
-  act.innerHTML = "";
-  if ((s.action_items || []).length) {
-    act.append(el("h3", null, `Action items (${s.action_items.length})`));
-    const table = el("table", "actions");
-    const thead = el("thead");
-    thead.innerHTML = "<tr><th>Task</th><th>Owner</th><th>Due</th><th></th></tr>";
-    table.appendChild(thead);
-    const tbody = el("tbody");
-    for (const a of s.action_items) {
-      const tr = el("tr");
-      tr.appendChild(el("td", null, a.task));
-      const ownerTd = el("td");
-      const unassigned = /unassigned/i.test(a.owner || "");
-      ownerTd.appendChild(el("span", "owner-chip" + (unassigned ? " owner-unassigned" : ""), a.owner || "Unassigned"));
-      tr.appendChild(ownerTd);
-      tr.appendChild(el("td", null, a.due || "Not specified"));
-      const tsTd = el("td");
-      const chip = tsChip(a.timestamp);
-      if (chip) tsTd.appendChild(chip);
-      tr.appendChild(tsTd);
-      tbody.appendChild(tr);
-    }
-    table.appendChild(tbody);
-    act.appendChild(table);
-  }
+  // Action items are loaded separately: the summary JSON records what the model
+  // extracted, while the action_items rows carry what the team has since decided.
+  // Rendering the JSON copy would show a stale owner the moment anyone reassigns one.
+  loadActionItems(m.id);
 
   // Open questions
   const q = $("#questions");
@@ -874,6 +851,166 @@ $("#chat-form").addEventListener("submit", (e) => {
 document.addEventListener("click", (e) => {
   if (e.target.classList.contains("example-q")) askQuestion(e.target.textContent);
 });
+
+
+// ------------------------------------------------------------------ action items
+const ACTION_PLACEHOLDER_OWNER = "Unassigned";
+
+/** Fetch and render the editable action items for one meeting. */
+async function loadActionItems(meetingId) {
+  const act = $("#actions");
+  act.innerHTML = "";
+  let items;
+  try {
+    items = await api("/meetings/" + meetingId + "/action-items");
+  } catch (_) {
+    return;  // the meeting still renders; the table is simply absent
+  }
+  if (!items.length) return;
+
+  const open = items.filter((i) => i.status !== "done").length;
+  act.append(el("h3", null, `Action items (${open} open of ${items.length})`));
+
+  const table = el("table", "actions");
+  const thead = el("thead");
+  const headRow = el("tr");
+  for (const label of ["", "Task", "Owner", "Due", ""]) {
+    headRow.appendChild(el("th", null, label));
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = el("tbody");
+  for (const item of items) tbody.appendChild(actionRow(item, meetingId));
+  table.appendChild(tbody);
+  act.appendChild(table);
+}
+
+function actionRow(item, meetingId) {
+  const tr = el("tr", item.status === "done" ? "action-done" : null);
+
+  // Done checkbox.
+  const doneTd = el("td", "action-check");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = item.status === "done";
+  box.setAttribute("aria-label", `Mark "${item.task}" as done`);
+  box.addEventListener("change", async () => {
+    box.disabled = true;
+    const ok = await patchAction(item.id, { status: box.checked ? "done" : "open" }, tr);
+    box.disabled = false;
+    if (ok) {
+      tr.classList.toggle("action-done", box.checked);
+      loadActionItems(meetingId);  // the open/total header has moved
+    } else {
+      box.checked = !box.checked;  // put the control back where the server says it is
+    }
+  });
+  doneTd.appendChild(box);
+  tr.appendChild(doneTd);
+
+  tr.appendChild(editableCell(item, "task", item.task, "Task"));
+  tr.appendChild(editableCell(item, "owner", item.owner, "Owner", ACTION_PLACEHOLDER_OWNER));
+  tr.appendChild(editableCell(item, "due", item.due, "Due"));
+
+  const tsTd = el("td");
+  const chip = tsChip(item.timestamp);
+  if (chip) tsTd.appendChild(chip);
+  if (item.edited) {
+    // Provenance: shows at a glance which rows a human has touched since extraction.
+    const mark = el("span", "edited-mark", "edited");
+    mark.title = "Changed since it was extracted from the transcript";
+    tsTd.appendChild(mark);
+  }
+  tr.appendChild(tsTd);
+  return tr;
+}
+
+/**
+ * A cell that becomes an input on click and saves on blur or Enter.
+ *
+ * Inline rather than a modal: reassigning four tasks should be four clicks, not four
+ * dialogs. Escape restores the previous value, so an accidental edit is undoable
+ * without a save.
+ */
+function editableCell(item, field, value, label, placeholderValue) {
+  const td = el("td", "editable");
+  const isPlaceholder = placeholderValue && value === placeholderValue;
+  const view = el(
+    "span",
+    field === "owner" ? "owner-chip" + (isPlaceholder ? " owner-unassigned" : "") : "cell-view",
+    value
+  );
+  view.tabIndex = 0;
+  view.setAttribute("role", "button");
+  view.setAttribute("aria-label", `Edit ${label}: ${value}`);
+
+  const beginEdit = () => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "cell-input";
+    input.value = value;
+    input.setAttribute("aria-label", label);
+
+    let settled = false;
+    const finish = async (save) => {
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      if (!save || !next || next === value) {
+        td.replaceChild(view, input);
+        return;
+      }
+      td.replaceChild(view, input);
+      view.textContent = next;  // optimistic; reverted below if the server disagrees
+      const ok = await patchAction(item.id, { [field]: next }, td.closest("tr"));
+      if (ok) {
+        value = next;
+        if (field === "owner") {
+          view.classList.toggle("owner-unassigned", next === ACTION_PLACEHOLDER_OWNER);
+        }
+      } else {
+        view.textContent = value;
+      }
+    };
+
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    });
+
+    td.replaceChild(input, view);
+    input.focus();
+    input.select();
+  };
+
+  view.addEventListener("click", beginEdit);
+  view.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); beginEdit(); }
+  });
+  td.appendChild(view);
+  return td;
+}
+
+/** PATCH one field. Returns true on success; surfaces the reason on failure. */
+async function patchAction(itemId, changes, row) {
+  try {
+    await api("/action-items/" + itemId, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    if (row) {
+      row.classList.add("action-saved");
+      setTimeout(() => row.classList.remove("action-saved"), 900);
+    }
+    return true;
+  } catch (err) {
+    toast(err.message, true);
+    return false;
+  }
+}
 
 // ------------------------------------------------------------------ insights
 // Charts are inline SVG built with element attributes, not a charting library: it keeps

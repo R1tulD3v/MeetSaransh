@@ -33,14 +33,23 @@ def _summary(*, actions=(), decisions=(), questions=(), topics=()) -> dict:
 
 
 def _meeting(user_id: str, *, title="Meeting", summary=None, duration=600.0, status="done"):
-    return storage.create_meeting(
+    """Seed a meeting the way the real pipeline does.
+
+    Action items are materialised into their own table as well as staying in the
+    summary JSON, because that is exactly what `jobs._run_job` does on completion --
+    a fixture that only wrote the JSON would be testing a state the app never produces.
+    """
+    summary = summary if summary is not None else _summary()
+    meeting_id = storage.create_meeting(
         user_id=user_id,
         title=title,
         filename=None,
         transcript={"text": "t", "segments": [], "duration": duration},
-        summary=summary if summary is not None else _summary(),
+        summary=summary,
         status=status,
     )
+    storage.replace_action_items(meeting_id, summary.get("action_items", []))
+    return meeting_id
 
 
 def _backdate(meeting_id: str, days_ago: int) -> None:
@@ -115,6 +124,50 @@ def test_owner_load_counts_and_ranks(user_id):
 
     assert [r["owner"] for r in rows] == ["Priya", "Rahul"]
     assert rows[0]["total"] == 2
+
+
+def test_owner_load_counts_completions(user_id):
+    """The table reflects what the team decided, not only what the model extracted."""
+    mid = _meeting(user_id, summary=_summary(actions=[("a", "Priya"), ("b", "Priya")]))
+    first = storage.list_action_items(mid, user_id)[0]
+    storage.update_action_item(first["id"], user_id, {"status": "done"})
+
+    row = analytics.action_items_by_owner(user_id)[0]
+    assert row["total"] == 2
+    assert row["completed"] == 1
+
+
+def test_completion_totals_open_versus_done(user_id):
+    mid = _meeting(user_id, summary=_summary(actions=[("a", "P"), ("b", "P"), ("c", "R")]))
+    items = storage.list_action_items(mid, user_id)
+    storage.update_action_item(items[0]["id"], user_id, {"status": "done"})
+
+    assert analytics.completion(user_id) == {"total": 3, "completed": 1, "open": 2}
+
+
+def test_completion_of_an_empty_account_is_zeros(user_id):
+    assert analytics.completion(user_id) == {"total": 0, "completed": 0, "open": 0}
+
+
+def test_a_completed_unowned_task_is_no_longer_a_loose_end(user_id):
+    """History, not a loose end -- listing it would train the reader to ignore the panel."""
+    mid = _meeting(user_id, summary=_summary(actions=[("orphan", "")]))
+    item = storage.list_action_items(mid, user_id)[0]
+    assert len(analytics.unassigned_action_items(user_id)) == 1
+
+    storage.update_action_item(item["id"], user_id, {"status": "done"})
+    assert analytics.unassigned_action_items(user_id) == []
+
+
+def test_reassigning_moves_the_work_on_the_dashboard(user_id):
+    """The whole point of normalising: the chart follows the team's decisions."""
+    mid = _meeting(user_id, summary=_summary(actions=[("a", "Unassigned")]))
+    item = storage.list_action_items(mid, user_id)[0]
+    storage.update_action_item(item["id"], user_id, {"owner": "Priya"})
+
+    owners = {r["owner"]: r["total"] for r in analytics.action_items_by_owner(user_id)}
+    assert owners == {"Priya": 1}
+    assert analytics.unassigned_action_items(user_id) == []
 
 
 def test_owner_load_counts_how_many_have_a_real_due_date(user_id):
@@ -244,6 +297,7 @@ def test_dashboard_endpoint_returns_every_section(client):
 
     assert set(body) == {
         "overview",
+        "completion",
         "by_owner",
         "over_time",
         "top_topics",
