@@ -15,6 +15,9 @@ from collections.abc import Iterator
 from typing import Literal
 
 from . import config, embeddings, llm, prompts, reranker, storage
+from .observability import get_logger
+
+log = get_logger("meetsaransh.rag")
 
 
 # --------------------------------------------------------------------- timestamps
@@ -244,6 +247,30 @@ def _normalize(values: list[float]) -> list[float]:
     return [v / hi for v in values] if hi > 0 else [0.0 for _ in values]
 
 
+# --------------------------------------------------------------------- query rewriting
+def rewrite_query(question: str) -> str:
+    """Rewrite a question into retrieval vocabulary, or return it unchanged.
+
+    Never raises and never returns nothing: every failure path -- no API key, provider
+    error, an empty or suspiciously long reply -- falls back to the original question.
+    A rewriter that can break search is worse than no rewriter.
+    """
+    if not config.has_api_key():
+        return question
+    try:
+        rewritten = llm.chat(prompts.build_rewrite_messages(question), temperature=0.0)
+    except llm.LLMError:
+        log.warning("query rewrite failed; searching with the original question")
+        return question
+
+    rewritten = " ".join(rewritten.strip().strip('"').split())
+    if not rewritten or len(rewritten) > config.QUERY_REWRITE_MAX_CHARS:
+        # A long reply means the model started explaining or answering instead of
+        # rewriting. Searching with that would drag its invented words into retrieval.
+        return question
+    return rewritten
+
+
 # --------------------------------------------------------------------- retrieval
 # How the dense and lexical scores are weighted. `hybrid` is what the app uses; the
 # other two exist so the evaluation harness can ablate one component at a time and show
@@ -275,26 +302,32 @@ def retrieve(
     mode: RetrievalMode = "hybrid",
     alpha: float | None = None,
     rerank: bool | None = None,
+    rewrite: bool | None = None,
 ) -> dict:
     """Hybrid retrieval over one user's indexed chunks.
 
     Returns {"ranked": [chunk+score...], "dense_best": float, "dense_used": bool}.
-    `mode`, `alpha` and `rerank` are evaluation levers: production uses the defaults.
+    `mode`, `alpha`, `rerank` and `rewrite` are evaluation levers: production uses the
+    defaults.
     """
     chunks = storage.get_chunks(user_id, scope_meeting_id)
     if not chunks:
         return {"ranked": [], "dense_best": 0.0, "dense_used": False, "empty": True}
 
+    use_rewrite = config.QUERY_REWRITE_ENABLED if rewrite is None else rewrite
+    search_text = rewrite_query(question) if use_rewrite else question
+    rewritten_used = search_text != question
+
     # Lexical component (always available).
     docs_tokens = [_tokenize(c["text"]) for c in chunks]
-    bm25 = _normalize(_bm25_scores(question, docs_tokens))
+    bm25 = _normalize(_bm25_scores(search_text, docs_tokens))
 
     # Dense component (when embeddings loaded AND chunks carry vectors).
     dense_raw = [0.0] * len(chunks)
     dense_used = False
     have_vectors = any(c["embedding"] is not None for c in chunks)
     if mode != "lexical" and embeddings.available() and have_vectors:
-        qvec = embeddings.embed_one(question)
+        qvec = embeddings.embed_one(search_text)
         if qvec is not None:
             import numpy as np
 
@@ -338,7 +371,7 @@ def retrieve(
     reranked_used = False
     if use_rerank and len(ranked) > 1:
         candidates = ranked[: config.RERANK_CANDIDATES]
-        reordered = reranker.rerank(question, candidates, config.RERANK_CANDIDATES)
+        reordered = reranker.rerank(search_text, candidates, config.RERANK_CANDIDATES)
         if reordered is not None:
             # Anything past the candidate window keeps its retrieval order behind the
             # reranked head, so nothing is silently dropped from the result.
@@ -347,6 +380,12 @@ def retrieve(
     # Does any meaningful query term literally appear in the corpus? This lets valid
     # keyword questions ("Rahul's action items") through even when the exact phrasing
     # isn't spoken, while clearly off-topic questions ("capital of France") stay out.
+    #
+    # Computed from the ORIGINAL question, never the rewrite. A rewriter adds synonyms,
+    # and synonyms of an off-topic question can easily collide with the corpus -- so
+    # rewriting for the gate would let "what is the capital of France" find a keyword
+    # and stop being refused. The rewrite is allowed to improve ranking; it is not
+    # allowed to change whether we have an answer at all.
     vocab: set[str] = set().union(*docs_tokens) if docs_tokens else set()
     content_match = bool(_content_terms(question) & vocab)
     return {
@@ -354,6 +393,8 @@ def retrieve(
         "dense_best": dense_best,
         "dense_used": dense_used,
         "reranked": reranked_used,
+        "rewritten": rewritten_used,
+        "search_text": search_text,
         "content_match": content_match,
         "empty": False,
     }

@@ -95,6 +95,7 @@ def evaluate(
     judge: bool = False,
     alpha: float | None = None,
     rerank: bool = False,
+    rewrite: bool = False,
 ):
     """Run every labelled question through one retrieval configuration.
 
@@ -110,14 +111,20 @@ def evaluate(
     label = mode if alpha is None else f"a={alpha:g}"
     if rerank:
         label += "+rr"
+    if rewrite:
+        label += "+qr"
     card = metrics.Scorecard(label=label, k=k)
 
     real_key = config.GROQ_API_KEY
-    if not judge:
+    # Query rewriting IS an LLM call, so unlike every other arm it cannot run with the
+    # key blanked. Everything else stays offline and deterministic.
+    if not judge and not rewrite:
         config.GROQ_API_KEY = ""
 
     for item in dataset["questions"]:
-        retrieved = rag.retrieve(item["question"], user_id, mode=mode, alpha=alpha, rerank=rerank)
+        retrieved = rag.retrieve(
+            item["question"], user_id, mode=mode, alpha=alpha, rerank=rerank, rewrite=rewrite
+        )
         ranked = retrieved["ranked"][:k]
         texts = [c["text"] for c in ranked]
         expected_meeting = id_map[item["meeting_id"]]
@@ -228,6 +235,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Retrieval depths to score (default: 1 3 and RAG_TOP_K).",
     )
     parser.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="Also score each mode with LLM query rewriting (needs an API key).",
+    )
+    parser.add_argument(
         "--rerank",
         action="store_true",
         help="Also score each mode with cross-encoder reranking, for an A/B.",
@@ -294,12 +306,22 @@ def main(argv: list[str] | None = None) -> int:
             # With --rerank each mode is scored twice, off and on, so the two rows sit
             # next to each other and the comparison is like-for-like.
             rerank_arms = [False, True] if args.rerank else [False]
+            rewrite_arms = [False, True] if args.rewrite else [False]
             for mode in modes:
                 for rr in rerank_arms:
-                    for k in ks:
-                        cards.append(
-                            evaluate(mode, k, user_id, id_map, judge=args.judge, rerank=rr)
-                        )
+                    for qr in rewrite_arms:
+                        for k in ks:
+                            cards.append(
+                                evaluate(
+                                    mode,
+                                    k,
+                                    user_id,
+                                    id_map,
+                                    judge=args.judge,
+                                    rerank=rr,
+                                    rewrite=qr,
+                                )
+                            )
 
         _print_table(cards, chunk_count, args.verbose)
 

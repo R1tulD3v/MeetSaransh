@@ -68,6 +68,27 @@ RAG_TOP_K: int = _env_int("RAG_TOP_K", 6)  # excerpts fed to the LLM per questio
 # passed to the LLM, whose grounded prompt is the real "not discussed" guard.
 RAG_MIN_SCORE: float = _env_float("RAG_MIN_SCORE", 0.50)
 
+# --- Query rewriting ---
+# An LLM rewrites the question into retrieval vocabulary before searching, because a
+# question and the answer rarely share words: people ask about "the basket page" when
+# the meeting said "cart serializer".
+#
+# ON by default, on evidence. `python -m evaluation.run --mode hybrid --rewrite`:
+#   recall@1        0.827 -> 0.981      MRR@1            0.846 -> 1.000
+#   right meeting@1 0.885 -> 1.000      paraphrase@1     0.500 -> 1.000
+# Refusal accuracy and the false-refusal rate are unchanged, because the refusal gate
+# reads the ORIGINAL question -- see `retrieve`.
+#
+# The cost is real and worth stating: one extra LLM call, measured at a ~1.6s median.
+# That moves first-citation latency on the streaming endpoint from ~0.1s to ~1.7s. It
+# ships on anyway because sourcing an answer from the wrong meeting is a worse failure
+# than a slower one -- but set QUERY_REWRITE_ENABLED=false for latency-sensitive
+# deployments, and the app degrades to plain hybrid retrieval.
+QUERY_REWRITE_ENABLED: bool = _env_bool("QUERY_REWRITE_ENABLED", True)
+# A rewrite is a search query, not an answer. Anything longer is the model ignoring
+# its instructions, and is discarded rather than searched with.
+QUERY_REWRITE_MAX_CHARS: int = _env_int("QUERY_REWRITE_MAX_CHARS", 400)
+
 # --- Reranking ---
 # A cross-encoder reads the question and a chunk together, so it scores their actual
 # relationship rather than the distance between two precomputed vectors. Accurate, and

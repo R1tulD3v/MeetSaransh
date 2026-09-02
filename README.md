@@ -25,9 +25,9 @@ across all your meetings** with grounded, cited answers.
   invent** them. Reassign, re-date, reword or tick them off inline, and the dashboard
   follows. Rows a human has touched are marked `edited`, so "the model said Priya owns
   this" stays distinguishable from "we decided Priya owns this".
-- **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with a
-  **streamed** answer and **clickable citations** that jump to the exact transcript
-  moment. Citations arrive *before* the first token, so the sources are on screen while
+- **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with
+  the question **rewritten into retrieval vocabulary** first, a **streamed** answer, and
+  **clickable citations** that jump to the exact transcript moment. Citations arrive *before* the first token, so the sources are on screen while
   the answer is still being written. Honest by design: it says *"I couldn't find
   anything about that"* when a topic wasn't discussed, instead of guessing.
 - **Click-to-seek** everywhere - timestamps in the summary, transcript, and chat citations
@@ -49,7 +49,7 @@ across all your meetings** with grounded, cited answers.
   worker pool, with live status in the UI and recovery after a restart.
 - **A measured retrieval pipeline** - a labelled evaluation set, an ablation, and a
   regression gate in CI, not just an assertion that the RAG is good.
-- **561 tests, 98% coverage**, every provider call mocked - the suite runs offline.
+- **577 tests, 98% coverage**, every provider call mocked - the suite runs offline.
 - **CI on every push**: lint, format, types, tests + coverage gate, a retrieval-quality
   regression gate, dependency audit, Docker build and a container smoke test.
 - **Containerized**: multi-stage build, non-root user, real health check.
@@ -166,6 +166,51 @@ spinner. A mid-stream failure also still leaves them with the excerpts.
   copies would eventually disagree, and the one users noticed would be whichever refused
   a question the other answered. There is a test asserting it stays a single function.
 
+### Query rewriting - built, measured, and shipped on
+
+A question and its answer rarely share vocabulary. People ask about "the basket page"
+when the meeting said "cart serializer", or "the slogan" when it said "tagline". An LLM
+rewrites the question into retrieval vocabulary before the search runs:
+
+```
+"Why was the basket page dragging?"
+    -> "basket page dragging slow lag cart page performance issue why"
+
+"What is being done about how often engineers get woken up?"
+    -> "engineer wake up frequency actions taken measures steps plan reduce
+        interruptions on-call alerts pager duty developers woken up often"
+```
+
+The harness says it works, and by a wide margin:
+
+| Configuration | recall@1 | MRR@1 | right meeting @1 | paraphrase recall@1 |
+| --- | --- | --- | --- | --- |
+| hybrid | 0.827 | 0.846 | 0.885 | 0.500 |
+| **hybrid + rewrite** | **0.981** | **1.000** | **1.000** | **1.000** |
+
+Paraphrase recall at rank 1 **doubles**, and the top-ranked chunk now comes from the
+right meeting every time. Three things make this safe rather than merely effective:
+
+- **The refusal gate reads the ORIGINAL question, never the rewrite.** A rewriter adds
+  synonyms, and synonyms of an off-topic question can collide with the corpus - so a
+  gate reading the rewrite could let "what is the capital of France" pick up a keyword
+  and stop being refused. The rewrite may improve *ranking*; it may not change whether
+  there is an answer at all. There is a test that feeds a deliberately hostile rewriter
+  and asserts the refusal still holds.
+- **The prompt forbids answering.** A rewriter that adds facts would smuggle a
+  hallucination into the retrieval step, where the grounding prompt can no longer catch
+  it. Output longer than `QUERY_REWRITE_MAX_CHARS` is discarded on the assumption the
+  model started explaining instead of rewriting.
+- **Every failure path returns the original question** - no key, provider error, empty
+  reply. A rewriter that can break search is worse than no rewriter.
+
+**The cost, stated plainly:** one extra LLM call, measured at a **~1.6s median**. That
+moves first-citation latency on the streaming endpoint from ~0.1s to ~1.7s, which
+partly spends the win the streaming work bought. It ships on anyway, because answering
+from the wrong meeting is a worse failure than answering slowly - but set
+`QUERY_REWRITE_ENABLED=false` for latency-sensitive deployments and the app degrades to
+plain hybrid retrieval.
+
 ### Reranking - built, measured, and shipped off
 
 A cross-encoder reads the question and a chunk *together*, rather than comparing two
@@ -201,6 +246,7 @@ off-topic questions that must be refused.
 python -m evaluation.run                 # ablation: hybrid vs dense vs lexical
 python -m evaluation.run --alpha-sweep   # tune the hybrid weight
 python -m evaluation.run --rerank        # A/B the cross-encoder second stage
+python -m evaluation.run --rewrite       # A/B LLM query rewriting (needs a key)
 python -m evaluation.run --mode lexical  # deterministic: no model, no network
 python -m evaluation.run --judge         # add LLM-as-judge faithfulness (needs a key)
 ```
@@ -222,7 +268,7 @@ Four design decisions worth defending:
 - **k is swept, not fixed.** With a small corpus a generous k retrieves everything and
   every configuration scores a meaningless 1.000.
 
-### It has already changed two decisions
+### It has already changed three decisions
 
 The hybrid weight shipped at `alpha = 0.65`. The sweep showed it scoring **0.875 recall
 on paraphrased questions - identical to lexical-only** - because BM25's confident wrong
@@ -243,8 +289,10 @@ metric cannot see - it is the only thing that still works when the embedding mod
 to load, and it matches exact tokens (names, ticket ids, error codes) that embeddings
 blur together. `0.8` takes the measured win without betting the feature on it.
 
-The second decision was reranking: built, measured, and left disabled because the
-numbers said so. See the RAG section above.
+The other two were **reranking** (built, measured, left disabled) and **query
+rewriting** (built, measured, turned on). Both are in the RAG section above. The pair is
+the point: the same harness, applied honestly, sent one feature to production and one to
+the shelf.
 
 **Honest limits of this harness.** 26 questions over 5 chunks is enough to catch a
 regression and to justify a weight change. It is not enough to certify a retrieval
@@ -350,7 +398,7 @@ app/
   llm.py           # shared chat client + retry/backoff
   embeddings.py    # local dense embeddings (fastembed)
 static/            # index.html, style.css, app.js  (no framework)
-tests/             # 561 tests, providers mocked, no network
+tests/             # 577 tests, providers mocked, no network
 evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
 ops/               # Prometheus scrape config
 data/sample/       # bundled sample meeting (offline demo)
@@ -577,18 +625,16 @@ Next up, in order:
 1. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
    plus Redis so the rate limiter and job queue are shared across processes. Needs
    Docker or a hosted Postgres to develop against - it is not written blind.
-2. **Query rewriting** - the remaining half of the retrieval-quality work, and now
-   measurable rather than assumed.
-3. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap (needs
+2. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap (needs
    ffmpeg).
-4. **Speaker diarization** - label "Speaker 1 -> Priya". Deliberately last: the usable
+3. **Speaker diarization** - label "Speaker 1 -> Priya". Deliberately last: the usable
    options need torch, which would undo the small-footprint story the rest of the
    project is built on.
 
 Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling
 &nbsp; [x] measured retrieval with a CI regression gate &nbsp; [x] insights dashboard
 &nbsp; [x] streamed answers &nbsp; [x] reranking (measured, shipped off)
-&nbsp; [x] editable action items.
+&nbsp; [x] query rewriting (measured, shipped on) &nbsp; [x] editable action items.
 
 ---
 

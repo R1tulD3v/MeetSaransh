@@ -108,3 +108,31 @@ def build_rag_messages(question: str, context: str) -> list[dict]:
         {"role": "system", "content": RAG_SYSTEM_PROMPT},
         {"role": "user", "content": RAG_USER_TEMPLATE.format(question=question, context=context)},
     ]
+
+
+# --------------------------------------------------------------------- query rewriting
+# Retrieval matches a question against transcript text, and the two rarely share
+# vocabulary: people ask "why was the basket page slow" about a meeting that said "N+1
+# query in the cart serializer". This rewrites the question into something closer to how
+# the answer would actually have been spoken.
+#
+# Deliberately narrow. The model is told to expand vocabulary, NOT to answer, reason, or
+# invent specifics -- a rewriter that adds facts would smuggle a hallucination into the
+# retrieval step, where the grounding prompt can no longer catch it.
+QUERY_REWRITE_PROMPT = """You rewrite a question into a search query for a meeting \
+transcript archive.
+
+Rules:
+- Keep every concept from the original question.
+- Add likely synonyms and the words people actually say out loud in meetings
+  (for example: basket -> cart, slogan -> tagline, slipped -> moved, delayed).
+- Expand abbreviations you are confident about.
+- Do NOT answer the question, explain anything, or invent names, numbers or dates.
+- Output ONLY the rewritten query, on one line, with no preamble and no quotes.
+
+Question: {question}"""
+
+
+def build_rewrite_messages(question: str) -> list[dict]:
+    """Assemble the chat messages that turn a question into a retrieval query."""
+    return [{"role": "user", "content": QUERY_REWRITE_PROMPT.format(question=question)}]
