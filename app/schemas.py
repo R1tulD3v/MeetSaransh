@@ -227,3 +227,48 @@ class MeetingAccepted(BaseModel):
     status: MeetingStatus
     created_at: str
     poll_url: str = Field(description="Poll this until status is 'done' or 'error'.")
+
+
+# --------------------------------------------------------------------------- analytics
+class AnalyticsOverview(BaseModel):
+    meetings: int
+    total_seconds: float
+    action_items: int
+    decisions: int
+    open_questions: int
+
+
+class OwnerLoad(BaseModel):
+    owner: str
+    total: int
+    with_due_date: int
+
+
+class DayPoint(BaseModel):
+    day: str
+    meetings: int
+    seconds: float
+
+
+class TopicCount(BaseModel):
+    title: str
+    mentions: int
+    meetings: int
+
+
+class UnassignedItem(BaseModel):
+    task: str
+    timestamp: str = ""
+    meeting_id: str
+    meeting_title: str
+
+
+class AnalyticsResponse(BaseModel):
+    """The whole dashboard in one payload -- the page renders as a unit."""
+
+    overview: AnalyticsOverview
+    by_owner: list[OwnerLoad]
+    over_time: list[DayPoint]
+    top_topics: list[TopicCount]
+    unassigned: list[UnassignedItem]
+    window_days: int

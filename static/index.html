@@ -54,6 +54,7 @@
     <nav class="viewnav">
       <button id="nav-meetings" class="navbtn navbtn-active" data-view="meetings">📋 Meetings</button>
       <button id="nav-ask" class="navbtn" data-view="ask">💬 Ask your meetings</button>
+      <button id="nav-insights" class="navbtn" data-view="insights">📊 Insights</button>
     </nav>
     <div class="topbar-right">
       <div id="status-badge" class="badge badge-muted">checking…</div>
@@ -165,6 +166,28 @@
              placeholder="Ask a question about your meetings…" />
       <button class="btn btn-primary" type="submit" id="chat-send">Ask</button>
     </form>
+  </section>
+
+  <!-- Insights: cross-meeting aggregates. Charts are inline SVG built with element
+       attributes rather than a charting library, which keeps the no-build-step and
+       no-node_modules story intact and needs no CSP exception. -->
+  <section id="view-insights" class="chat hidden">
+    <div class="chat-head">
+      <div>
+        <h2>📊 Insights</h2>
+        <p class="tag" id="insights-sub">Patterns across every meeting you have processed.</p>
+      </div>
+      <label class="field scope-field">
+        <span>Window</span>
+        <select id="insights-window">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="insights-body" class="insights"></div>
   </section>
 
   <div id="toast" class="toast hidden"></div>

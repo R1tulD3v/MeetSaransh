@@ -29,6 +29,10 @@ across all your meetings** with grounded, cited answers.
 - **Click-to-seek** everywhere - timestamps in the summary, transcript, and chat citations
   all seek the audio / scroll the transcript.
 - **Transcript search** with match highlighting.
+- **Insights dashboard** - action items by owner (and how many actually have a due
+  date), meeting cadence over time, recurring topics, and the work nobody has picked up.
+  Every figure is a SQL aggregation, and each loose end links back to the meeting it
+  came from.
 - **Export** the summary as copy-ready Markdown.
 - **Runs with no API key** - a bundled sample meeting demonstrates the whole app offline;
   RAG chat falls back to returning the most relevant excerpts.
@@ -41,7 +45,7 @@ across all your meetings** with grounded, cited answers.
   worker pool, with live status in the UI and recovery after a restart.
 - **A measured retrieval pipeline** - a labelled evaluation set, an ablation, and a
   regression gate in CI, not just an assertion that the RAG is good.
-- **459 tests, 98% coverage**, every provider call mocked - the suite runs offline.
+- **486 tests, 98% coverage**, every provider call mocked - the suite runs offline.
 - **CI on every push**: lint, format, types, tests + coverage gate, a retrieval-quality
   regression gate, dependency audit, Docker build and a container smoke test.
 - **Containerized**: multi-stage build, non-root user, real health check.
@@ -198,6 +202,30 @@ where the numbers are read by a person rather than by a threshold.
 
 ---
 
+## The insights dashboard
+
+Every number is a SQL aggregation over the stored summaries, using SQLite's JSON1
+extension to walk into `summary_json` rather than loading every meeting into Python and
+counting in a loop. That is not only tidier: the loop costs one full transcript read per
+meeting, so it degrades exactly as a user accumulates the meetings that make the
+dashboard worth looking at.
+
+Three choices worth explaining:
+
+- **`Unassigned` is a bucket, not a gap.** It is usually the most actionable row on the
+  page, because it is the work nobody has picked up - so it is charted alongside the
+  named owners and given its own panel, rather than filtered out.
+- **Days with no meetings are filled in.** Otherwise three meetings three weeks apart
+  draw as three adjacent points and read as a busy week.
+- **Charts are inline SVG built with element attributes**, not a charting library. It
+  keeps the no-build-step, no-`node_modules` story intact and needs no CSP exception.
+
+Scope, stated honestly: this is SQL group-by plus visualisation. It is a real product
+feature and a fair "I can model and query data" talking point. It is not data science
+and is not presented as such.
+
+---
+
 ## Architecture
 
 ```
@@ -227,6 +255,7 @@ app/
   auth.py          # password hashing (scrypt) + JWT issue/verify
   deps.py          # get_current_user, require_admin
   jobs.py          # background transcription pool + crash recovery
+  analytics.py     # cross-meeting SQL aggregations for the dashboard
   config.py        # env-driven settings + startup validation
   schemas.py       # Pydantic request/response models (the API contract)
   errors.py        # one error envelope + centralized handlers
@@ -241,7 +270,7 @@ app/
   llm.py           # shared chat client + retry/backoff
   embeddings.py    # local dense embeddings (fastembed)
 static/            # index.html, style.css, app.js  (no framework)
-tests/             # 459 tests, providers mocked, no network
+tests/             # 486 tests, providers mocked, no network
 evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
 ops/               # Prometheus scrape config
 data/sample/       # bundled sample meeting (offline demo)
@@ -270,6 +299,7 @@ Every route below except `/health` and `/metrics` requires
 | `GET`  | `/api/v1/meetings/{id}/audio` , `/export` | stream audio , Markdown export |
 | `DELETE` | `/api/v1/meetings/{id}` | delete meeting + audio + chunks |
 | `POST` | `/api/v1/chat` | grounded Q&A (optional `meeting_id` scope) |
+| `GET`  | `/api/v1/analytics` | cross-meeting aggregates (`?days=` window) |
 | `POST` | `/api/v1/reindex` | index any meetings not yet in the vector store |
 | `GET`  | `/api/v1/rag/status` | embeddings availability, indexed meeting/chunk counts |
 | `GET`  | `/metrics` | Prometheus exposition (unversioned, by convention) |
@@ -461,16 +491,15 @@ sum(rate(meetsaransh_rate_limited_total[5m])) by (route)
 
 Next up, in order:
 
-1. **Analytics dashboard** - action items by owner/status, decisions over time.
-2. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
+1. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
    plus Redis so the rate limiter and job queue are shared across processes.
-3. **Query rewriting and reranking** - now worth doing, because the harness can say
+2. **Query rewriting and reranking** - now worth doing, because the harness can say
    whether they actually help rather than assuming they do.
-4. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap.
-5. **Speaker diarization** - label "Speaker 1 -> Priya".
+3. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap.
+4. **Speaker diarization** - label "Speaker 1 -> Priya".
 
 Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling
-&nbsp; [x] measured retrieval with a CI regression gate.
+&nbsp; [x] measured retrieval with a CI regression gate &nbsp; [x] insights dashboard.
 
 ---
 

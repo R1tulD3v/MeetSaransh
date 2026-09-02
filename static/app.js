@@ -681,10 +681,14 @@ function switchView(view) {
     b.classList.toggle("navbtn-active", b.dataset.view === view));
   $(".layout").classList.toggle("hidden", view !== "meetings");
   $("#chat-view").classList.toggle("hidden", view !== "ask");
+  $("#view-insights").classList.toggle("hidden", view !== "insights");
   if (view === "ask") {
     loadRagStatus();
     $("#chat-q").focus();
   }
+  // Fetched on entry rather than kept live: the numbers only change when a meeting
+  // finishes, and polling aggregates nobody is looking at is wasted budget.
+  if (view === "insights") loadInsights();
 }
 document.querySelectorAll(".navbtn").forEach((b) =>
   b.addEventListener("click", () => switchView(b.dataset.view)));
@@ -764,6 +768,197 @@ document.addEventListener("click", (e) => {
   if (e.target.classList.contains("example-q")) askQuestion(e.target.textContent);
 });
 
+// ------------------------------------------------------------------ insights
+// Charts are inline SVG built with element attributes, not a charting library: it keeps
+// the no-build-step story intact, and setting geometry via attributes rather than style
+// works under the app's strict CSP with no exception.
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  return node;
+}
+
+function statTile(label, value, sub) {
+  const box = el("div", "stat");
+  box.append(el("div", "stat-label", label), el("div", "stat-value", value));
+  if (sub) box.appendChild(el("div", "stat-sub", sub));
+  return box;
+}
+
+function panel(title, note) {
+  const box = el("section", "panel");
+  box.appendChild(el("h3", null, title));
+  if (note) box.appendChild(el("p", "panel-note", note));
+  return box;
+}
+
+function hoursLabel(seconds) {
+  const mins = Math.round((seconds || 0) / 60);
+  if (mins < 60) return `${mins} min`;
+  return `${(mins / 60).toFixed(1)} hrs`;
+}
+
+/** Horizontal bars. The green portion is the share that has a real due date. */
+function renderOwnerBars(rows) {
+  const box = panel(
+    "Action items by owner",
+    "Green marks the share with a due date. Unassigned work is listed, not hidden."
+  );
+  if (!rows.length) {
+    box.appendChild(el("p", "panel-empty", "No action items yet."));
+    return box;
+  }
+  const max = Math.max(...rows.map((r) => r.total));
+  const bars = el("div", "bars");
+  for (const row of rows) {
+    const line = el("div", "bar-row");
+    line.appendChild(el("div", "bar-name", row.owner));
+
+    const track = el("div", "bar-track");
+    const fill = el("div", "bar-fill" + (row.with_due_date ? " partial" : ""));
+    // setProperty on a CSSOM object is not an inline style attribute, so the CSP
+    // that forbids unsafe-inline styles is unaffected.
+    fill.style.setProperty("width", `${(row.total / max) * 100}%`);
+    track.appendChild(fill);
+    line.appendChild(track);
+
+    line.appendChild(
+      el("div", "bar-count", `${row.total}${row.with_due_date ? ` (${row.with_due_date} dated)` : ""}`)
+    );
+    bars.appendChild(line);
+  }
+  box.appendChild(bars);
+  return box;
+}
+
+/** Area-and-line sparkline over the window, with the last point emphasised. */
+function renderTimeSeries(points, windowDays) {
+  const box = panel(`Meetings over the last ${windowDays} days`, null);
+  const total = points.reduce((sum, p) => sum + p.meetings, 0);
+  if (!total) {
+    box.appendChild(el("p", "panel-empty", "No meetings in this window."));
+    return box;
+  }
+
+  const W = 640, H = 96, PAD = 6;
+  const max = Math.max(1, ...points.map((p) => p.meetings));
+  const stepX = (W - PAD * 2) / Math.max(1, points.length - 1);
+  const y = (v) => H - PAD - (v / max) * (H - PAD * 2);
+  const x = (i) => PAD + i * stepX;
+
+  const chart = svg("svg", {
+    class: "spark",
+    viewBox: `0 0 ${W} ${H}`,
+    preserveAspectRatio: "none",
+    role: "img",
+    "aria-label": `${total} meetings over the last ${windowDays} days`,
+  });
+
+  chart.appendChild(svg("line", { class: "spark-grid", x1: PAD, y1: y(0), x2: W - PAD, y2: y(0) }));
+
+  const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.meetings).toFixed(1)}`);
+  chart.appendChild(
+    svg("path", {
+      class: "spark-area",
+      d: `${line.join(" ")} L${x(points.length - 1).toFixed(1)},${y(0)} L${x(0).toFixed(1)},${y(0)} Z`,
+    })
+  );
+  chart.appendChild(svg("path", { class: "spark-line", d: line.join(" ") }));
+
+  const last = points[points.length - 1];
+  chart.appendChild(
+    svg("circle", { class: "spark-dot", cx: x(points.length - 1), cy: y(last.meetings), r: 3 })
+  );
+
+  box.appendChild(chart);
+  const ends = el("div", "bar-row");
+  ends.style.setProperty("grid-template-columns", "1fr auto");
+  ends.append(
+    el("div", "bar-count", new Date(points[0].day).toLocaleDateString()),
+    el("div", "bar-count", `${total} meeting${total === 1 ? "" : "s"} · today`)
+  );
+  box.appendChild(ends);
+  return box;
+}
+
+function renderTopics(rows) {
+  const box = panel("Recurring topics", "Counted across every meeting, case-insensitively.");
+  if (!rows.length) {
+    box.appendChild(el("p", "panel-empty", "No topics yet."));
+    return box;
+  }
+  const list = el("div", "topic-list");
+  for (const row of rows) {
+    const chip = el("div", "topic-chip");
+    chip.appendChild(el("b", null, row.title));
+    chip.appendChild(el("span", null, `${row.mentions}`));
+    list.appendChild(chip);
+  }
+  box.appendChild(list);
+  return box;
+}
+
+function renderLooseEnds(rows) {
+  const box = panel("Work with no owner", "The loose ends worth chasing first.");
+  if (!rows.length) {
+    box.appendChild(el("p", "panel-empty", "Everything has an owner."));
+    return box;
+  }
+  const list = el("ul", "loose-list");
+  for (const row of rows) {
+    const item = el("li");
+    const button = el("button", "loose-item");
+    button.type = "button";
+    button.append(
+      el("div", "loose-task", row.task),
+      el("div", "loose-meta", `${row.meeting_title}${row.timestamp ? ` · ${row.timestamp}` : ""}`)
+    );
+    button.addEventListener("click", () => {
+      switchView("meetings");
+      openMeeting(row.meeting_id);
+    });
+    item.appendChild(button);
+    list.appendChild(item);
+  }
+  box.appendChild(list);
+  return box;
+}
+
+async function loadInsights() {
+  const body = $("#insights-body");
+  body.innerHTML = "";
+  body.appendChild(el("p", "panel-empty", "Loading…"));
+  try {
+    const days = $("#insights-window").value;
+    const data = await api(`/analytics?days=${days}`);
+    body.innerHTML = "";
+
+    const o = data.overview;
+    const stats = el("div", "stat-row");
+    stats.append(
+      statTile("Meetings", String(o.meetings), hoursLabel(o.total_seconds) + " captured"),
+      statTile("Action items", String(o.action_items)),
+      statTile("Decisions", String(o.decisions)),
+      statTile("Open questions", String(o.open_questions)),
+      statTile("Unowned", String(data.unassigned.length), "need an owner")
+    );
+    body.appendChild(stats);
+
+    body.appendChild(renderTimeSeries(data.over_time, data.window_days));
+
+    const grid = el("div", "panel-grid");
+    grid.append(renderOwnerBars(data.by_owner), renderLooseEnds(data.unassigned));
+    body.appendChild(grid);
+
+    body.appendChild(renderTopics(data.top_topics));
+  } catch (err) {
+    body.innerHTML = "";
+    body.appendChild(el("p", "panel-empty", err.message));
+  }
+}
+
 // ------------------------------------------------------------------ wire up
 $("#upload-btn").addEventListener("click", uploadMeeting);
 $("#sample-btn").addEventListener("click", loadSample);
@@ -773,6 +968,7 @@ $("#auth-form").addEventListener("submit", submitAuth);
 $("#auth-tab-login").addEventListener("click", () => setAuthMode("login"));
 $("#auth-tab-register").addEventListener("click", () => setAuthMode("register"));
 $("#logout-btn").addEventListener("click", signOut);
+$("#insights-window").addEventListener("change", loadInsights);
 // Leaving an interval running against a hidden tab wastes the user's battery and
 // their rate-limit budget for no benefit.
 document.addEventListener("visibilitychange", () => {

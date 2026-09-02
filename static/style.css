@@ -271,3 +271,102 @@ mark { background: #ffe58a; color: inherit; border-radius: 3px; }
 @media (prefers-reduced-motion: reduce) {
   .spinner-ring { animation-duration: 3s; }
 }
+
+
+/* ------------------------------------------------------------------ insights */
+.insights { display: grid; gap: 16px; padding: 4px 0 24px; }
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 12px;
+}
+.stat {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px 15px;
+}
+.stat .stat-label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.stat .stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  /* Digits line up between tiles instead of jittering. */
+  font-variant-numeric: tabular-nums;
+}
+.stat .stat-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.panel h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+  margin: 0 0 3px;
+}
+.panel .panel-note { font-size: 12px; color: var(--muted); margin: 0 0 13px; }
+.panel-empty { color: var(--muted); font-size: 13.5px; padding: 6px 0 2px; }
+
+.panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .panel-grid { grid-template-columns: 1fr; } }
+
+/* Horizontal bars: a row per owner, so long names stay readable. */
+.bars { display: grid; gap: 9px; }
+.bar-row { display: grid; grid-template-columns: 108px 1fr auto; gap: 10px; align-items: center; }
+.bar-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-track { background: var(--chip); border-radius: 999px; height: 9px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; background: var(--brand); }
+/* The portion of a person's work that actually has a due date. */
+.bar-fill.partial { background: var(--ok); }
+.bar-count { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.spark { width: 100%; height: 96px; display: block; }
+.spark-area { fill: var(--brand); opacity: .14; }
+.spark-line { fill: none; stroke: var(--brand); stroke-width: 2; stroke-linejoin: round; }
+.spark-grid { stroke: var(--line); stroke-width: 1; }
+.spark-dot { fill: var(--brand); }
+.spark-axis { font-size: 10px; fill: var(--muted); }
+
+.topic-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.topic-chip {
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+}
+.topic-chip b { font-weight: 600; }
+.topic-chip span { color: var(--muted); margin-left: 5px; font-variant-numeric: tabular-nums; }
+
+.loose-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.loose-item {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 11px;
+  cursor: pointer;
+  background: none;
+  text-align: left;
+  width: 100%;
+  color: var(--ink);
+  font: inherit;
+}
+.loose-item:hover { border-color: var(--brand); }
+.loose-task { font-size: 13.5px; }
+.loose-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }

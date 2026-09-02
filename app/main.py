@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (
     __version__,
+    analytics,
     auth,
     config,
     embeddings,
@@ -395,6 +396,16 @@ def api_get_audio(meeting_id: str, user: CurrentUser) -> FileResponse:
 def api_export_markdown(meeting_id: str, user: CurrentUser) -> str:
     """Export the summary + action items as copy-ready Markdown (close-the-loop)."""
     return _to_markdown(_require_meeting(meeting_id, user))
+
+
+# --------------------------------------------------------------------------- analytics
+@api.get("/analytics", response_model=schemas.AnalyticsResponse, tags=["analytics"])
+def api_analytics(
+    user: CurrentUser,
+    days: int = Query(30, ge=1, le=365, description="Trailing window for the time series."),
+) -> schemas.AnalyticsResponse:
+    """Cross-meeting aggregates for the caller: workload, cadence, topics, loose ends."""
+    return schemas.AnalyticsResponse(**analytics.dashboard(user["id"], days=days))
 
 
 # -------------------------------------------------------------------------- RAG / chat
