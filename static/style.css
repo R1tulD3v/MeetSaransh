@@ -216,3 +216,58 @@ mark { background: #ffe58a; color: inherit; border-radius: 3px; }
 .seg.seg-flash { background: rgba(47,107,255,.12); border-radius: 6px; }
 
 .hidden { display: none !important; }
+
+
+/* ---------------------------------------------------------------- auth gate */
+/* A full-page overlay rather than a separate route: the app has no client-side
+   router, and gating in place keeps the signed-in markup untouched. */
+.auth-gate {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center; padding: 24px;
+  background: var(--bg);
+}
+.auth-gate.hidden { display: none; }
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; padding: 26px;
+}
+.auth-brand { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
+.auth-brand h1 { font-size: 19px; letter-spacing: -.01em; }
+.auth-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+.auth-tab {
+  flex: 1; padding: 9px 8px; background: none; border: none; cursor: pointer;
+  color: var(--muted); font: inherit; font-size: 13.5px; font-weight: 600;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.auth-tab-active { color: var(--ink); border-bottom-color: var(--brand); }
+.auth-note { font-size: 12px; color: var(--muted); margin: 14px 0 0; line-height: 1.5; }
+
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-email { font-size: 12.5px; color: var(--muted); max-width: 180px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn-compact { width: auto; margin-top: 0; padding: 6px 12px; font-size: 12.5px; }
+
+/* -------------------------------------------------------- processing states */
+/* A queued meeting is a real row in the list, so it needs to look like one that
+   is not finished yet rather than one that is empty. */
+.mi-status { font-size: 11.5px; font-weight: 600; margin-top: 3px; }
+.mi-status.queued, .mi-status.processing { color: var(--warn); }
+.mi-status.error { color: var(--danger); }
+.meeting-list li.item.pending { opacity: .85; }
+
+.processing-state { display: grid; place-items: center; min-height: 45vh; text-align: center; gap: 14px; }
+.processing-state h2 { font-size: 18px; }
+.processing-state p { color: var(--muted); font-size: 13.5px; max-width: 44ch; }
+.processing-state .btn { width: auto; }
+
+.spinner-ring {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--brand);
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Respect a reduced-motion preference rather than spinning regardless. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner-ring { animation-duration: 3s; }
+}

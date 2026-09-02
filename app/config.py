@@ -8,6 +8,7 @@ so a misconfiguration fails at boot with a clear message instead of at first req
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -83,6 +84,28 @@ ALLOWED_AUDIO_EXTS: set[str] = {
     ".flac",
 }
 
+# --- Authentication ---
+# There is deliberately NO hardcoded default secret. A shipped default is a shipped
+# forgery key: anyone who reads the source can mint tokens for any account. In
+# production a missing secret is a hard startup failure; in development an ephemeral
+# random one is generated, which merely means tokens do not survive a restart.
+JWT_SECRET: str = _env_str("JWT_SECRET") or secrets.token_urlsafe(48)
+JWT_SECRET_WAS_GENERATED: bool = not _env_str("JWT_SECRET")
+# Short access token, long refresh token: a leaked access token expires quickly, and a
+# refresh token can be revoked server-side because its id is stored.
+ACCESS_TOKEN_MINUTES: int = _env_int("ACCESS_TOKEN_MINUTES", 30)
+REFRESH_TOKEN_DAYS: int = _env_int("REFRESH_TOKEN_DAYS", 7)
+MIN_JWT_SECRET_LENGTH: int = 32
+
+# --- Background jobs ---
+# Transcription runs off the request thread. Worker count is small on purpose: each job
+# is dominated by a network call to the ASR provider, and the provider rate-limits us
+# long before local CPU becomes the constraint.
+JOB_WORKERS: int = _env_int("JOB_WORKERS", 2)
+# A per-user ceiling on queued/running jobs. Without it one account can fill the queue
+# and spend the whole provider budget.
+MAX_ACTIVE_JOBS_PER_USER: int = _env_int("MAX_ACTIVE_JOBS_PER_USER", 3)
+
 # --- Rate limiting ---
 # These endpoints call *paid* provider APIs, so they are capped per client. Limits are
 # expressed as "N requests per WINDOW seconds".
@@ -91,6 +114,9 @@ RATE_LIMIT_WINDOW_SECONDS: int = _env_int("RATE_LIMIT_WINDOW_SECONDS", 60)
 RATE_LIMIT_UPLOAD: int = _env_int("RATE_LIMIT_UPLOAD", 5)  # transcription: slow + costly
 RATE_LIMIT_CHAT: int = _env_int("RATE_LIMIT_CHAT", 20)  # chat: cheap but LLM-billed
 RATE_LIMIT_DEFAULT: int = _env_int("RATE_LIMIT_DEFAULT", 120)  # everything else
+# Login and registration are brute-force targets, and each login runs an intentionally
+# expensive KDF -- so an uncapped login endpoint is both a credential risk and a CPU DoS.
+RATE_LIMIT_AUTH: int = _env_int("RATE_LIMIT_AUTH", 10)
 # X-Forwarded-For is trivially spoofable unless a proxy you control overwrites it, so
 # honouring it is opt-in: enable this only when the app really sits behind one.
 TRUST_PROXY_HEADERS: bool = _env_bool("TRUST_PROXY_HEADERS", False)
@@ -151,6 +177,22 @@ def validate() -> list[str]:
         raise ConfigError("MAX_UPLOAD_BYTES is implausibly small.")
     if IS_PRODUCTION and "*" in CORS_ORIGINS:
         raise ConfigError("CORS_ORIGINS must not be '*' in production.")
+    if IS_PRODUCTION and JWT_SECRET_WAS_GENERATED:
+        raise ConfigError(
+            "JWT_SECRET must be set in production. A generated secret changes on every "
+            "restart, which would log every user out, and cannot be shared across "
+            'replicas. Generate one with: python -c "import secrets; '
+            'print(secrets.token_urlsafe(48))"'
+        )
+    if not JWT_SECRET_WAS_GENERATED and len(JWT_SECRET) < MIN_JWT_SECRET_LENGTH:
+        raise ConfigError(
+            f"JWT_SECRET must be at least {MIN_JWT_SECRET_LENGTH} characters; "
+            f"a short secret is brute-forceable offline."
+        )
+    if ACCESS_TOKEN_MINUTES < 1 or REFRESH_TOKEN_DAYS < 1:
+        raise ConfigError("Token lifetimes must be at least one minute / one day.")
+    if JOB_WORKERS < 1:
+        raise ConfigError("JOB_WORKERS must be at least 1.")
 
     warnings: list[str] = []
     if not has_api_key():
@@ -160,4 +202,9 @@ def validate() -> list[str]:
         )
     if IS_PRODUCTION and not RATE_LIMIT_ENABLED:
         warnings.append("Rate limiting is disabled in production - paid endpoints are uncapped.")
+    if JWT_SECRET_WAS_GENERATED:
+        warnings.append(
+            "JWT_SECRET is not set - a random one was generated, so all sessions end "
+            "when this process restarts. Set JWT_SECRET in .env to keep them."
+        )
     return warnings

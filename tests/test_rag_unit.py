@@ -13,6 +13,25 @@ import pytest
 
 from app import config, rag, storage
 
+# Meetings are owned now, so the unit tests need an owner. One per test, created on
+# first use and reset by the autouse fixture below, keeps every call site a one-liner.
+_owner_id: str | None = None
+
+
+def _uid() -> str:
+    global _owner_id
+    if _owner_id is None:
+        _owner_id = storage.create_user(email="rag@example.com", password_hash="x")["id"]
+    return _owner_id
+
+
+@pytest.fixture(autouse=True)
+def _reset_owner():
+    global _owner_id
+    _owner_id = None
+    yield
+    _owner_id = None
+
 
 # --------------------------------------------------------------------------- timestamps
 @pytest.mark.parametrize(
@@ -162,6 +181,7 @@ def test_a_question_made_only_of_stopwords_has_no_content_terms():
 # --------------------------------------------------------------------------- retrieval
 def _index(segments: list[dict], title: str = "Planning Sync") -> str:
     mid = storage.create_meeting(
+        user_id=_uid(),
         title=title,
         filename=None,
         transcript={
@@ -175,14 +195,14 @@ def _index(segments: list[dict], title: str = "Planning Sync") -> str:
     return mid
 
 
-def test_retrieve_on_an_empty_store_reports_empty(client):
-    assert rag.retrieve("anything")["empty"] is True
+def test_retrieve_on_an_empty_store_reports_empty():
+    assert rag.retrieve("anything", _uid())["empty"] is True
 
 
 def test_lexical_only_retrieval_still_ranks_correctly(sample_segments):
     """With no embedding model the app degrades to BM25 rather than breaking."""
     _index(sample_segments)
-    result = rag.retrieve("payment gateway migration")
+    result = rag.retrieve("payment gateway migration", _uid())
     assert result["dense_used"] is False
     assert result["ranked"][0]["lexical"] > 0
     assert result["content_match"] is True
@@ -190,14 +210,14 @@ def test_lexical_only_retrieval_still_ranks_correctly(sample_segments):
 
 def test_retrieval_uses_the_dense_signal_when_vectors_exist(fake_embeddings, sample_segments):
     _index(sample_segments)
-    result = rag.retrieve("payment gateway migration")
+    result = rag.retrieve("payment gateway migration", _uid())
     assert result["dense_used"] is True
     assert result["dense_best"] > 0
 
 
 def test_off_topic_question_has_no_content_match(sample_segments):
     _index(sample_segments)
-    assert rag.retrieve("What is the capital of France?")["content_match"] is False
+    assert rag.retrieve("What is the capital of France?", _uid())["content_match"] is False
 
 
 def test_retrieval_can_be_scoped_to_one_meeting(sample_segments):
@@ -206,16 +226,16 @@ def test_retrieval_can_be_scoped_to_one_meeting(sample_segments):
         [{"start": 0.0, "end": 4.0, "text": "Unrelated design review notes."}], title="Meeting B"
     )
 
-    scoped = rag.retrieve("notes", scope_meeting_id=a)
+    scoped = rag.retrieve("notes", _uid(), scope_meeting_id=a)
     assert {c["meeting_id"] for c in scoped["ranked"]} == {a}
-    assert len(rag.retrieve("notes")["ranked"]) > len(scoped["ranked"])
+    assert len(rag.retrieve("notes", _uid())["ranked"]) > len(scoped["ranked"])
 
 
 # ------------------------------------------------------------------------ refusal gate
 def test_refuses_a_clearly_unrelated_question(sample_segments):
     """The headline honesty guarantee: no keyword overlap and no semantic match."""
     _index(sample_segments)
-    result = rag.answer("What is the capital of France?")
+    result = rag.answer("What is the capital of France?", _uid())
     assert result["mode"] == "refused"
     assert result["answer"] == rag.REFUSAL
     assert result["citations"] == []
@@ -224,22 +244,22 @@ def test_refuses_a_clearly_unrelated_question(sample_segments):
 def test_a_keyword_match_is_enough_to_attempt_an_answer(without_api_key, sample_segments):
     """A valid keyword question must not be refused just because phrasing differs."""
     _index(sample_segments)
-    result = rag.answer("What did Rahul say?")
+    result = rag.answer("What did Rahul say?", _uid())
     assert result["mode"] == "retrieval_only"
     assert result["citations"]
 
 
 def test_answering_with_no_meetings_indexed_reports_empty():
-    assert rag.answer("anything")["mode"] == "empty"
+    assert rag.answer("anything", _uid())["mode"] == "empty"
 
 
 def test_a_blank_question_is_rejected_before_retrieval():
-    assert rag.answer("   ")["mode"] == "error"
+    assert rag.answer("   ", _uid())["mode"] == "error"
 
 
 def test_without_a_key_the_answer_is_excerpts_not_a_guess(without_api_key, sample_segments):
     _index(sample_segments)
-    result = rag.answer("payment gateway")
+    result = rag.answer("payment gateway", _uid())
     assert result["mode"] == "retrieval_only"
     assert result["answer"] is None  # never fabricate prose without the model
     assert result["note"]
@@ -258,7 +278,7 @@ def test_top_k_caps_the_number_of_citations(monkeypatch, without_api_key):
         for i in range(8)
     ]
     _index(segments)
-    assert len(rag.answer("release planning")["citations"]) == 2
+    assert len(rag.answer("release planning", _uid())["citations"]) == 2
 
 
 # ---------------------------------------------------------------------------- citations
@@ -300,6 +320,7 @@ def test_indexing_an_unknown_meeting_is_a_no_op():
 
 def test_a_meeting_with_no_segments_indexes_to_zero_chunks():
     mid = storage.create_meeting(
+        user_id=_uid(),
         title="Empty",
         filename=None,
         transcript={"text": "", "segments": [], "duration": 0},
@@ -311,7 +332,7 @@ def test_a_meeting_with_no_segments_indexes_to_zero_chunks():
 
 def test_reindex_only_touches_meetings_that_are_not_indexed_yet(sample_segments):
     _index(sample_segments)
-    result = rag.reindex_all()
+    result = rag.reindex_all(_uid())
     assert result["meetings"] == 1
     assert result["newly_indexed"] == 0  # already indexed; no wasted embedding work
     assert result["total_chunks"] > 0
@@ -319,18 +340,26 @@ def test_reindex_only_touches_meetings_that_are_not_indexed_yet(sample_segments)
 
 def test_reindex_picks_up_a_meeting_stored_without_indexing(sample_segments):
     storage.create_meeting(
+        user_id=_uid(),
         title="Unindexed",
         filename=None,
         transcript={"text": "x", "segments": sample_segments, "duration": 31.0},
         summary={},
     )
-    assert rag.reindex_all()["newly_indexed"] == 1
+    assert rag.reindex_all(_uid())["newly_indexed"] == 1
 
 
 def test_status_reports_the_store_contents(sample_segments):
     _index(sample_segments)
-    status = rag.status()
+    status = rag.status(_uid())
     assert status["indexed_meetings"] == 1
     assert status["total_chunks"] >= 1
     assert status["embeddings_available"] is False  # forced off in tests
     assert status["embed_model"] == config.EMBED_MODEL
+
+
+def test_reindex_skips_meetings_that_are_still_processing():
+    """A queued meeting has no transcript to chunk; retrying it on every chat request
+    would be wasted work on every single question."""
+    storage.create_meeting(user_id=_uid(), title="Queued", filename=None, status="queued")
+    assert rag.reindex_all(_uid())["meetings"] == 0

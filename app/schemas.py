@@ -8,9 +8,9 @@ checkable instead of against whatever the handler happened to return that day.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 # ------------------------------------------------------------------------------- errors
 
@@ -42,6 +42,10 @@ class HealthResponse(BaseModel):
 
 
 # ----------------------------------------------------------------------------- meetings
+
+# A meeting is created immediately and filled in by a background worker, so its
+# lifecycle is part of the public contract rather than an implementation detail.
+MeetingStatus = Literal["queued", "processing", "done", "error"]
 
 
 class ActionItem(BaseModel):
@@ -81,6 +85,11 @@ class MeetingListItem(BaseModel):
     title: str
     created_at: str
     duration: float = 0.0
+    status: MeetingStatus = "done"
+    stage: str | None = Field(
+        default=None, description="What the worker is currently doing, while processing."
+    )
+    error: str | None = Field(default=None, description="Why processing failed, if it did.")
 
 
 class MeetingPage(BaseModel):
@@ -98,11 +107,15 @@ class Meeting(BaseModel):
     title: str
     filename: str | None = None
     created_at: str
+    updated_at: str | None = None
     duration: float = 0.0
     transcript: str = ""
     audio_ext: str | None = None
     segments: list[Segment] = []
     summary: Summary = Summary()
+    status: MeetingStatus = "done"
+    stage: str | None = None
+    error: str | None = None
 
 
 class DeleteResponse(BaseModel):
@@ -148,3 +161,69 @@ class ReindexResponse(BaseModel):
     meetings: int
     newly_indexed: int
     total_chunks: int
+
+
+# -------------------------------------------------------------------------------- auth
+# A deliberate sanity check, not RFC 5322 validation. Full email validation is not
+# regex-expressible, and the only proof an address is real is sending mail to it -- so
+# pydantic's EmailStr (which pulls in email-validator and dnspython) would buy strictness
+# we do not actually need for a login identifier. This rejects the obviously-malformed
+# and bounds the length; anything subtler is the mail server's problem.
+Email = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        min_length=3,
+        max_length=254,  # the practical maximum length of an email address
+        pattern=r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$",
+    ),
+]
+
+
+class RegisterRequest(BaseModel):
+    email: Email
+    # The lower bound is enforced again in auth.hash_password, because the API is not
+    # the only caller and a password policy that lives only in a schema is optional.
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: Email
+    password: str = Field(min_length=1, max_length=128)
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class User(BaseModel):
+    id: str
+    email: str
+    role: str
+    created_at: str
+
+
+class TokenPair(BaseModel):
+    """The tokens plus the user, so a client needs one round trip to sign in."""
+
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int = Field(description="Access-token lifetime in seconds.")
+    user: User
+
+
+class LogoutResponse(BaseModel):
+    revoked: int = Field(description="How many refresh tokens were invalidated.")
+
+
+# -------------------------------------------------------------------------------- jobs
+class MeetingAccepted(BaseModel):
+    """202 response for an upload: the meeting exists, processing has not finished."""
+
+    id: str
+    title: str
+    status: MeetingStatus
+    created_at: str
+    poll_url: str = Field(description="Poll this until status is 'done' or 'error'.")

@@ -175,6 +175,26 @@ RAG_ANSWERS = Counter(
     "Chat answers by outcome mode.",
     ["mode"],
 )
+JOBS_COMPLETED = Counter(
+    "meetsaransh_jobs_completed_total",
+    "Background transcription jobs that reached a terminal state.",
+    ["outcome"],
+)
+JOB_QUEUE_DEPTH = Gauge(
+    "meetsaransh_job_queue_depth",
+    "Meetings waiting for or undergoing processing.",
+    ["state"],
+)
+LOGINS = Counter(
+    "meetsaransh_logins_total",
+    "Authentication attempts by outcome.",
+    ["outcome"],
+)
+AUTH_REJECTIONS = Counter(
+    "meetsaransh_auth_rejections_total",
+    "Requests rejected for a missing or invalid credential.",
+    ["reason"],
+)
 MEETINGS_STORED = Gauge("meetsaransh_meetings_stored", "Meetings currently stored.")
 CHUNKS_STORED = Gauge("meetsaransh_chunks_indexed", "RAG chunks currently indexed.")
 

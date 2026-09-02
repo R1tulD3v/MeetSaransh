@@ -79,14 +79,41 @@ def _resolve_route(request: Request, original_path: str) -> str:
 def client_key(request: Request) -> str:
     """Identify the caller for rate-limiting purposes.
 
-    Today that is an IP address. Once authentication lands this becomes the user id,
-    which is strictly better -- an IP is shared by everyone behind one NAT.
+    An authenticated caller is keyed by user id, which is strictly better than an IP:
+    a whole office behind one NAT shares an address, so IP-keyed limits punish
+    colleagues for each other's usage while a single user on a phone gets a fresh
+    budget every time their address changes.
+
+    The token is verified here rather than trusted, because an unverified `sub` would
+    let anyone pick their own rate-limit bucket. Verification is one HMAC, and this
+    runs before the route's own authentication dependency -- a request that fails auth
+    later still consumed the correct budget.
     """
+    user_id = _user_from_bearer(request)
+    if user_id:
+        return f"user:{user_id}"
+
     if config.TRUST_PROXY_HEADERS:
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+            return f"ip:{forwarded.split(',')[0].strip()}"
+    return f"ip:{request.client.host}" if request.client else "ip:unknown"
+
+
+def _user_from_bearer(request: Request) -> str | None:
+    """Return the verified user id from an Authorization header, or None."""
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    try:
+        from . import auth
+
+        return str(auth.decode_token(token, "access")["sub"])
+    except Exception:
+        # An invalid or expired token is not an error here -- the caller simply falls
+        # back to being rate-limited by address, and the route rejects them properly.
+        return None
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

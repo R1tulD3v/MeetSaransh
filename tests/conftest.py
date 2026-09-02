@@ -1,14 +1,18 @@
 """Shared fixtures.
 
-Two rules hold across the whole suite:
+Three rules hold across the whole suite:
 
 1. **No network.** Every provider call is mocked with respx, and the embedding model is
    forced unavailable by default (loading it downloads ~90 MB and takes ~50 s). Tests
    that need the dense retrieval path use the `fake_embeddings` fixture, which supplies
    deterministic vectors instead.
 2. **No shared state.** Each test gets its own temporary data directory and database,
-   and the rate limiter and migration cache are reset between tests, so tests can run in
-   any order and in parallel.
+   and the rate limiter, migration cache, and job workers are reset between tests, so
+   tests can run in any order.
+3. **No real key-stretching.** scrypt is deliberately slow; at production parameters a
+   suite that registers a user per test would spend minutes burning CPU. The cost is
+   lowered for tests only, and `tests/test_auth.py` asserts the production parameters
+   separately.
 """
 
 from __future__ import annotations
@@ -22,12 +26,15 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from app import config, embeddings, observability, security, storage
+from app import auth, config, embeddings, jobs, observability, security, storage
 from app.main import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_ASR_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+TEST_EMAIL = "alice@example.com"
+TEST_PASSWORD = "correct-horse-battery"
 
 
 # ------------------------------------------------------------------------ isolation
@@ -40,6 +47,8 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     monkeypatch.setattr(config, "DB_PATH", data_dir / "meetsaransh.db")
     # The bundled sample is real fixture data, so keep pointing at the repo copy.
     monkeypatch.setattr(config, "SAMPLE_DIR", REPO_ROOT / "data" / "sample")
+    # Fixed so a token minted in one part of a test verifies in another.
+    monkeypatch.setattr(config, "JWT_SECRET", "test-secret-not-used-anywhere-real-0123456789")
 
     storage.reset_migration_cache()
     security.limiter.reset()
@@ -48,8 +57,18 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     monkeypatch.setattr(config, "RATE_LIMIT_ENABLED", False)
     observability.configure_logging()
     yield
+    # Never tear down a temp database out from under a running worker thread.
+    jobs.wait_for_idle(timeout=10)
+    jobs.stop_workers(wait=True)
     storage.reset_migration_cache()
     security.limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def fast_password_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the scrypt cost for tests. See the module docstring for why."""
+    monkeypatch.setattr(auth, "_SCRYPT_N", 2**8)
+    monkeypatch.setattr(auth, "_SCRYPT_MAXMEM", 128 * (2**8) * 8 * 2)
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +82,7 @@ def no_embedding_model(monkeypatch: pytest.MonkeyPatch) -> None:
 def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Deterministic stand-in vectors, so the dense path is testable without the model.
 
-    The vector is a bag-of-characters histogram: texts sharing vocabulary land near each
+    The vector is a bag-of-tokens histogram: texts sharing vocabulary land near each
     other under cosine similarity, which is the only property the retrieval code needs.
     """
 
@@ -94,33 +113,57 @@ def without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "GROQ_API_KEY", "")
 
 
-# ------------------------------------------------------------------------------ client
+# ------------------------------------------------------------------------------ clients
 @pytest.fixture
-def client(without_api_key: None) -> Iterator[TestClient]:
-    """Test client with NO API key -- the safe default: a test that forgets to mock a
-    provider call fails loudly instead of silently trying to reach Groq."""
+def anon_client(without_api_key: None) -> Iterator[TestClient]:
+    """Unauthenticated client, for testing that protected routes actually reject."""
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def client(anon_client: TestClient) -> TestClient:
+    """Signed-in client with NO API key.
+
+    No key is the safe default: a test that forgets to mock a provider call fails
+    loudly instead of silently trying to reach Groq.
+    """
+    return sign_up(anon_client, TEST_EMAIL, TEST_PASSWORD)
 
 
 @pytest.fixture
 def keyed_client(with_api_key: None) -> Iterator[TestClient]:
-    """Test client WITH a (fake) key, for exercising the provider-backed paths."""
+    """Signed-in client WITH a (fake) key, for exercising the provider-backed paths."""
     with TestClient(app) as c:
-        yield c
+        yield sign_up(c, TEST_EMAIL, TEST_PASSWORD)
 
 
 @pytest.fixture
-def groq_mock() -> Iterator[respx.MockRouter]:
-    """Intercept outbound Groq calls while letting TestClient's own requests through.
+def second_client() -> TestClient:
+    """A second account on the same server, for cross-user isolation tests.
 
-    respx patches httpx globally, and TestClient *is* an httpx client, so its requests
-    to http://testserver have to be explicitly passed through or every API test would
-    deadlock against the mock router.
+    Deliberately a *separate* client object sharing the same app, so a test can hold
+    both users' credentials at once and prove one cannot see the other's data. It does
+    not depend on `client`, so it composes with `keyed_client` too -- a test asks for
+    whichever first account it needs, and fixture order makes that one the first
+    registration.
     """
-    with respx.mock(assert_all_called=False) as router:
-        router.route(host="testserver").pass_through()
-        yield router
+    return sign_up(TestClient(app), "mallory@example.com", "a-completely-different-pw")
+
+
+def sign_up(c: TestClient, email: str, password: str) -> TestClient:
+    """Register an account and leave the client authenticated as it."""
+    response = c.post("/api/v1/auth/register", json={"email": email, "password": password})
+    assert response.status_code == 201, response.text
+    c.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
+    return c
+
+
+def tokens_for(c: TestClient, email: str, password: str) -> dict:
+    """Register and return the raw token payload, without touching client headers."""
+    response = c.post("/api/v1/auth/register", json={"email": email, "password": password})
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 # ------------------------------------------------------------------------ audio fixtures
@@ -154,7 +197,26 @@ def sample_segments() -> list[dict]:
     ]
 
 
+@pytest.fixture
+def user_id(client: TestClient) -> str:
+    """The signed-in test user's id, for calling storage/rag directly."""
+    return str(client.get("/api/v1/auth/me").json()["id"])
+
+
 # --------------------------------------------------------------------- provider payloads
+@pytest.fixture
+def groq_mock() -> Iterator[respx.MockRouter]:
+    """Intercept outbound Groq calls while letting TestClient's own requests through.
+
+    respx patches httpx globally, and TestClient *is* an httpx client, so its requests
+    to http://testserver have to be explicitly passed through or every API test would
+    deadlock against the mock router.
+    """
+    with respx.mock(assert_all_called=False) as router:
+        router.route(host="testserver").pass_through()
+        yield router
+
+
 def chat_completion(content: str) -> dict:
     """The subset of Groq's chat-completions response that the client reads."""
     return {"choices": [{"message": {"role": "assistant", "content": content}}]}

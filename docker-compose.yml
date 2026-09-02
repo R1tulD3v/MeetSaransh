@@ -19,6 +19,10 @@ services:
       LOG_JSON: "true"
       # Secrets come from the environment, never from the image or a committed file.
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Required: the app refuses to start in production without it, because a
+      # per-process random secret would log every user out on each restart.
+      #   export JWT_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET before starting - see .env.example}
       # Behind compose there is no trusted proxy rewriting X-Forwarded-For, so the
       # rate limiter keys on the real peer address instead.
       TRUST_PROXY_HEADERS: "false"

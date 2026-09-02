@@ -115,9 +115,12 @@ jobs:
 
       - name: Start the container
         # No API key on purpose: this asserts the image boots and degrades to sample
-        # mode rather than crashing when the provider is not configured.
+        # mode rather than crashing when the provider is not configured. JWT_SECRET is
+        # supplied because the app refuses to start in production without one.
         run: |
-          docker run -d --name meetsaransh -p 8000:8000 meetsaransh:ci
+          docker run -d --name meetsaransh -p 8000:8000 \
+            -e JWT_SECRET=ci-only-secret-not-used-anywhere-real-0123456789 \
+            meetsaransh:ci
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8000/api/v1/health > /dev/null; then
               echo "up after ${i}s"; exit 0
@@ -135,9 +138,28 @@ jobs:
           echo "$health"
           echo "$health" | grep -q '"database":true'
 
+          echo "--- meeting routes reject an anonymous caller ---"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/v1/meetings)" = "401"
+
+          echo "--- register, then use the token ---"
+          access=$(curl -fsS -X POST http://localhost:8000/api/v1/auth/register \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.com","password":"ci-password-123"}' \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+          test -n "$access"
+
           echo "--- sample meeting works with no API key ---"
           curl -fsS -X POST http://localhost:8000/api/v1/meetings/sample \
+            -H "Authorization: Bearer $access" \
             -o /dev/null -w '%{http_code}\n' | grep -q 201
+
+          echo "--- a second account sees none of the first account's meetings ---"
+          other=$(curl -fsS -X POST http://localhost:8000/api/v1/auth/register \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"other@example.com","password":"ci-password-456"}' \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+          curl -fsS http://localhost:8000/api/v1/meetings -H "Authorization: Bearer $other" \
+            | grep -q '"total":0'
 
           echo "--- security headers are present ---"
           curl -fsSI http://localhost:8000/api/v1/health | grep -qi 'content-security-policy'

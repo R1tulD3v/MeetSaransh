@@ -1,27 +1,16 @@
-"""End-to-end API tests through the ASGI stack, with every provider call mocked."""
+"""End-to-end API tests through the ASGI stack, with every provider call mocked.
+
+Upload *processing* lives in tests/test_jobs.py; what is tested here is the request
+surface -- validation, pagination, the error envelope, export, and chat.
+"""
 
 from __future__ import annotations
-
-import json
 
 import httpx
 import pytest
 
-from app import config, storage
-from tests.conftest import (
-    GROQ_ASR_URL,
-    GROQ_CHAT_URL,
-    SUMMARY_JSON,
-    chat_completion,
-    mp3_bytes,
-    verbose_transcription,
-    wav_bytes,
-)
-
-ASR_SEGMENTS = [
-    {"start": 0.0, "end": 6.0, "text": "Priya will own the payment gateway migration."},
-    {"start": 6.0, "end": 12.0, "text": "Rahul flagged the checkout latency regression."},
-]
+from app import config, jobs, storage
+from tests.conftest import GROQ_ASR_URL, GROQ_CHAT_URL, chat_completion, mp3_bytes, wav_bytes
 
 
 def _upload(client, data: bytes | None = None, filename: str = "standup.mp3", title: str = ""):
@@ -29,15 +18,6 @@ def _upload(client, data: bytes | None = None, filename: str = "standup.mp3", ti
         "/api/v1/meetings",
         files={"file": (filename, data if data is not None else mp3_bytes(), "audio/mpeg")},
         data={"title": title},
-    )
-
-
-def _mock_full_pipeline(groq_mock) -> None:
-    groq_mock.post(GROQ_ASR_URL).mock(
-        return_value=httpx.Response(200, json=verbose_transcription(ASR_SEGMENTS))
-    )
-    groq_mock.post(GROQ_CHAT_URL).mock(
-        return_value=httpx.Response(200, json=chat_completion(json.dumps(SUMMARY_JSON)))
     )
 
 
@@ -69,6 +49,13 @@ def test_only_the_versioned_routes_are_documented(client):
     assert "/api/meetings" not in paths
 
 
+def test_the_openapi_schema_marks_protected_routes_as_needing_a_token(client):
+    """Auth as a dependency means the contract advertises itself."""
+    schema = client.get("/openapi.json").json()
+    assert "security" in schema["paths"]["/api/v1/meetings"]["get"]
+    assert "security" not in schema["paths"]["/api/v1/health"]["get"]
+
+
 # ---------------------------------------------------------------------- list & pagination
 def test_listing_an_empty_store_returns_an_empty_page(client):
     assert client.get("/api/v1/meetings").json() == {
@@ -79,14 +66,10 @@ def test_listing_an_empty_store_returns_an_empty_page(client):
     }
 
 
-def test_pagination_walks_the_full_set_without_gaps_or_repeats(client):
+def test_pagination_walks_the_full_set_without_gaps_or_repeats(client, user_id):
     for i in range(5):
-        storage.create_meeting(
-            title=f"M{i}",
-            filename=None,
-            transcript={"text": "", "segments": [], "duration": 0},
-            summary={},
-        )
+        storage.create_meeting(user_id=user_id, title=f"M{i}", filename=None)
+
     first = client.get("/api/v1/meetings?limit=2&offset=0").json()
     second = client.get("/api/v1/meetings?limit=2&offset=2").json()
     third = client.get("/api/v1/meetings?limit=2&offset=4").json()
@@ -104,35 +87,15 @@ def test_invalid_pagination_is_rejected_with_the_error_envelope(client, query):
     assert response.json()["error"]["code"] == "validation_error"
 
 
-# --------------------------------------------------------------------------- upload flow
-def test_a_full_upload_produces_a_summarized_indexed_meeting(keyed_client, groq_mock):
-    _mock_full_pipeline(groq_mock)
-    response = _upload(keyed_client, title="Q3 Planning")
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["title"] == "Q3 Planning"
-    assert body["duration"] == 12.0
-    assert len(body["segments"]) == 2
-    assert body["summary"]["action_items"][0]["owner"] == "Priya"
-    # Indexed for RAG as part of the same request.
-    assert storage.count_chunks() > 0
+def test_the_list_carries_processing_state(client, user_id):
+    """The sidebar renders a spinner from this, so it has to come back in the list."""
+    storage.create_meeting(user_id=user_id, title="Working", filename=None, status="queued")
+    item = client.get("/api/v1/meetings").json()["items"][0]
+    assert item["status"] == "queued"
+    assert item["error"] is None
 
 
-def test_the_filename_is_used_when_no_title_is_given(keyed_client, groq_mock):
-    _mock_full_pipeline(groq_mock)
-    body = _upload(keyed_client, filename="weekly-standup.mp3").json()
-    assert body["title"] == "weekly-standup"
-
-
-def test_the_audio_file_is_persisted_and_downloadable(keyed_client, groq_mock):
-    _mock_full_pipeline(groq_mock)
-    mid = _upload(keyed_client, data=wav_bytes(), filename="a.wav").json()["id"]
-
-    assert (config.AUDIO_DIR / f"{mid}.wav").exists()
-    assert keyed_client.get(f"/api/v1/meetings/{mid}/audio").status_code == 200
-
-
+# --------------------------------------------------------------------- upload validation
 @pytest.mark.parametrize("filename", ["notes.txt", "archive.zip", "script.py", "noextension"])
 def test_disallowed_extensions_are_rejected(keyed_client, filename):
     response = _upload(keyed_client, filename=filename)
@@ -159,11 +122,13 @@ def test_an_oversized_upload_is_rejected_with_413(keyed_client, monkeypatch, gro
     assert asr.call_count == 0
 
 
-def test_a_rejected_upload_leaves_no_file_behind(keyed_client, monkeypatch):
-    """A partially-written file from an aborted upload would leak disk forever."""
+def test_a_rejected_upload_leaves_no_file_and_no_row(keyed_client, monkeypatch):
+    """A partial file from an aborted upload would leak disk forever."""
     monkeypatch.setattr(config, "MAX_UPLOAD_BYTES", 4096)
     _upload(keyed_client, data=mp3_bytes(20_000))
+
     assert list(config.AUDIO_DIR.glob("*")) == []
+    assert keyed_client.get("/api/v1/meetings").json()["total"] == 0
 
 
 def test_an_empty_file_is_rejected(keyed_client):
@@ -172,35 +137,10 @@ def test_an_empty_file_is_rejected(keyed_client):
     assert response.json()["error"]["code"] == "empty_file"
 
 
-def test_an_asr_failure_returns_502_and_cleans_up_the_audio(keyed_client, groq_mock):
+def test_a_wav_upload_is_accepted_and_keeps_its_extension(keyed_client, groq_mock):
     groq_mock.post(GROQ_ASR_URL).mock(return_value=httpx.Response(500, json={}))
-    response = _upload(keyed_client)
-
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "asr_failed"
-    assert list(config.AUDIO_DIR.glob("*")) == []
-    assert storage.count_meetings() == 0  # nothing half-saved
-
-
-def test_a_summarization_failure_after_a_good_transcript_saves_nothing(keyed_client, groq_mock):
-    """Transcription succeeded and cost money, but a half-processed meeting is worse
-    than none: the response says exactly which stage failed."""
-    groq_mock.post(GROQ_ASR_URL).mock(
-        return_value=httpx.Response(200, json=verbose_transcription(ASR_SEGMENTS))
-    )
-    groq_mock.post(GROQ_CHAT_URL).mock(return_value=httpx.Response(401, json={}))
-    response = _upload(keyed_client)
-
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "summarization_failed"
-    assert storage.count_meetings() == 0
-    assert list(config.AUDIO_DIR.glob("*")) == []
-
-
-def test_uploading_without_a_key_fails_with_a_helpful_message(client):
-    response = _upload(client)
-    assert response.status_code == 502
-    assert "sample" in response.json()["error"]["message"].lower()
+    meeting_id = _upload(keyed_client, data=wav_bytes(), filename="a.wav").json()["id"]
+    assert keyed_client.get(f"/api/v1/meetings/{meeting_id}").json()["audio_ext"] == ".wav"
 
 
 # ---------------------------------------------------------------------------- sample flow
@@ -210,6 +150,7 @@ def test_the_sample_meeting_works_with_no_api_key(client):
     assert response.status_code == 201
     body = response.json()
     assert body["title"] == "Q3 Mobile App Planning Sync"
+    assert body["status"] == "done"  # nothing to transcribe, so no queue
     assert body["summary"]["tldr"]
     assert body["segments"]
     assert storage.count_chunks() > 0
@@ -238,39 +179,42 @@ def test_fetching_a_missing_meeting_returns_the_error_envelope(client):
     assert error["request_id"]  # traceable back to the logs
 
 
-def test_deleting_a_meeting_removes_its_row_audio_and_chunks(keyed_client, groq_mock):
-    _mock_full_pipeline(groq_mock)
-    mid = _upload(keyed_client).json()["id"]
+def test_deleting_a_meeting_removes_its_row_and_chunks(client):
+    meeting_id = client.post("/api/v1/meetings/sample").json()["id"]
     assert storage.count_chunks() > 0
 
-    assert keyed_client.delete(f"/api/v1/meetings/{mid}").json() == {"deleted": mid}
-    assert storage.get_meeting(mid) is None
+    assert client.delete(f"/api/v1/meetings/{meeting_id}").json() == {"deleted": meeting_id}
+    assert client.get(f"/api/v1/meetings/{meeting_id}").status_code == 404
     assert storage.count_chunks() == 0
-    assert list(config.AUDIO_DIR.glob("*")) == []
 
 
 def test_deleting_twice_is_a_404_not_a_crash(client):
-    mid = client.post("/api/v1/meetings/sample").json()["id"]
-    assert client.delete(f"/api/v1/meetings/{mid}").status_code == 200
-    assert client.delete(f"/api/v1/meetings/{mid}").status_code == 404
+    meeting_id = client.post("/api/v1/meetings/sample").json()["id"]
+    assert client.delete(f"/api/v1/meetings/{meeting_id}").status_code == 200
+    assert client.delete(f"/api/v1/meetings/{meeting_id}").status_code == 404
 
 
 def test_audio_is_404_for_a_meeting_that_has_none(client):
-    mid = client.post("/api/v1/meetings/sample").json()["id"]  # sample has no audio file
-    assert client.get(f"/api/v1/meetings/{mid}/audio").status_code == 404
+    meeting_id = client.post("/api/v1/meetings/sample").json()["id"]  # sample has no file
+    assert client.get(f"/api/v1/meetings/{meeting_id}/audio").status_code == 404
 
 
 def test_audio_is_404_when_the_row_survives_but_the_file_is_gone(keyed_client, groq_mock):
-    _mock_full_pipeline(groq_mock)
-    mid = _upload(keyed_client).json()["id"]
-    (config.AUDIO_DIR / f"{mid}.mp3").unlink()
-    assert keyed_client.get(f"/api/v1/meetings/{mid}/audio").status_code == 404
+    """The real scenario: a failed job deletes the recording but keeps the row, so the
+    meeting is still listable and still explains itself -- its audio just isn't there."""
+    groq_mock.post(GROQ_ASR_URL).mock(return_value=httpx.Response(500, json={}))
+    meeting_id = _upload(keyed_client).json()["id"]
+    jobs.wait_for_idle(timeout=15)
+
+    assert not (config.AUDIO_DIR / f"{meeting_id}.mp3").exists()
+    assert keyed_client.get(f"/api/v1/meetings/{meeting_id}").json()["audio_ext"] == ".mp3"
+    assert keyed_client.get(f"/api/v1/meetings/{meeting_id}/audio").status_code == 404
 
 
 # --------------------------------------------------------------------------------- export
 def test_markdown_export_contains_every_summary_section(client):
-    mid = client.post("/api/v1/meetings/sample").json()["id"]
-    markdown = client.get(f"/api/v1/meetings/{mid}/export").text
+    meeting_id = client.post("/api/v1/meetings/sample").json()["id"]
+    markdown = client.get(f"/api/v1/meetings/{meeting_id}/export").text
 
     assert markdown.startswith("# Q3 Mobile App Planning Sync")
     assert "## TL;DR" in markdown
@@ -284,14 +228,13 @@ def test_exporting_a_missing_meeting_is_a_404(client):
 
 # ------------------------------------------------------------------------------ RAG chat
 def test_chat_returns_a_grounded_answer_with_citations(keyed_client, groq_mock):
-    _mock_full_pipeline(groq_mock)
-    _upload(keyed_client)
     groq_mock.post(GROQ_CHAT_URL).mock(
         return_value=httpx.Response(200, json=chat_completion("Priya owns the migration."))
     )
+    keyed_client.post("/api/v1/meetings/sample")
 
     body = keyed_client.post(
-        "/api/v1/chat", json={"question": "Who owns the payment gateway migration?"}
+        "/api/v1/chat", json={"question": "Who owns the payment bug fix?"}
     ).json()
 
     assert body["mode"] == "answer"
@@ -326,9 +269,10 @@ def test_chat_reports_a_provider_failure_but_still_returns_the_excerpts(keyed_cl
     assert body["citations"]  # degraded, not empty
 
 
-def test_chat_can_be_scoped_to_a_single_meeting(client):
-    a = client.post("/api/v1/meetings/sample").json()["id"]
+def test_chat_can_be_scoped_to_a_single_meeting(client, user_id):
+    scoped_to = client.post("/api/v1/meetings/sample").json()["id"]
     storage.create_meeting(
+        user_id=user_id,
         title="Other",
         filename=None,
         transcript={
@@ -338,8 +282,16 @@ def test_chat_can_be_scoped_to_a_single_meeting(client):
         },
         summary={},
     )
-    body = client.post("/api/v1/chat", json={"question": "budget", "meeting_id": a}).json()
-    assert all(c["meeting_id"] == a for c in body["citations"])
+    body = client.post("/api/v1/chat", json={"question": "budget", "meeting_id": scoped_to}).json()
+    assert all(c["meeting_id"] == scoped_to for c in body["citations"])
+
+
+def test_scoping_to_a_meeting_that_does_not_exist_is_a_404(client):
+    """Rejected rather than silently widened to 'all meetings', which would answer from
+    a different set than the caller asked about."""
+    client.post("/api/v1/meetings/sample")
+    response = client.post("/api/v1/chat", json={"question": "hi", "meeting_id": "nope"})
+    assert response.status_code == 404
 
 
 def test_chat_with_no_meetings_says_so(client):
@@ -355,8 +307,9 @@ def test_malformed_chat_requests_are_rejected_by_the_schema(client, payload):
 
 
 # ------------------------------------------------------------------------------- reindex
-def test_reindex_picks_up_meetings_stored_outside_the_upload_path(client):
+def test_reindex_picks_up_meetings_stored_outside_the_upload_path(client, user_id):
     storage.create_meeting(
+        user_id=user_id,
         title="Imported",
         filename=None,
         transcript={
@@ -379,19 +332,35 @@ def test_rag_status_reflects_what_is_indexed(client):
 
 
 # ------------------------------------------------------------------------ static frontend
-def test_the_frontend_is_served_at_the_root(client):
-    response = client.get("/")
+def test_the_frontend_is_served_at_the_root(anon_client):
+    """Unauthenticated on purpose: the page itself is what renders the sign-in form."""
+    response = anon_client.get("/")
     assert response.status_code == 200
     assert "MeetSaransh" in response.text
 
 
-def test_static_assets_are_served(client):
-    assert client.get("/static/app.js").status_code == 200
-    assert client.get("/static/style.css").status_code == 200
+def test_static_assets_are_served(anon_client):
+    assert anon_client.get("/static/app.js").status_code == 200
+    assert anon_client.get("/static/style.css").status_code == 200
 
 
-def test_the_frontend_and_the_backend_agree_on_the_api_version(client):
+def test_the_frontend_and_the_backend_agree_on_the_api_version(anon_client):
     """A cheap guard against the two drifting: the shipped JS must call /api/v1."""
-    app_js = client.get("/static/app.js").text
+    app_js = anon_client.get("/static/app.js").text
     assert 'const API = "/api/v1"' in app_js
     assert '"/api/meetings"' not in app_js  # no leftover unversioned call sites
+
+
+def test_asset_urls_are_cache_busted_by_version(anon_client):
+    """A cached app.js from the previous release against a moved-on API looks exactly
+    like a broken deploy, and is invisible to anyone testing with an empty cache."""
+    from app import __version__
+
+    html = anon_client.get("/").text
+    assert f"/static/app.js?v={__version__}" in html
+    assert f"/static/style.css?v={__version__}" in html
+
+
+def test_the_app_shell_is_always_revalidated(anon_client):
+    """The shell carries the versioned asset URLs, so caching it defeats the busting."""
+    assert "no-cache" in anon_client.get("/").headers["cache-control"]

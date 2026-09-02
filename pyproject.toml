@@ -58,6 +58,11 @@ disallow_untyped_defs = false       # pragmatic: enforced on new app code by rev
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+# Storage getters return `dict | None` because a caller might ask for a row that does
+# not exist. Test code overwhelmingly asks for rows it just created two lines earlier,
+# so narrowing every one of them would add an assert per assertion and obscure what is
+# actually being tested. The None-handling paths have their own explicit tests.
+disable_error_code = ["index", "union-attr"]
 
 # -------------------------------------------------------------------- pytest / cov
 [tool.pytest.ini_options]

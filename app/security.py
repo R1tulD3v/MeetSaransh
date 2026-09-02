@@ -145,10 +145,17 @@ limiter = RateLimiter()
 
 
 def limit_for_path(method: str, path: str) -> int:
-    """Per-endpoint request budget. Costly endpoints get the tightest caps."""
-    if method == "POST" and path.rstrip("/").endswith("/meetings"):
-        return config.RATE_LIMIT_UPLOAD  # runs ASR + LLM: slowest and most expensive
-    if method == "POST" and (path.endswith("/chat") or path.endswith("/meetings/sample")):
+    """Per-endpoint request budget. Costly and attackable endpoints get the tightest caps."""
+    if method != "POST":
+        return config.RATE_LIMIT_DEFAULT  # reads are cheap
+    clean = path.rstrip("/")
+    if clean.endswith(("/auth/login", "/auth/register")):
+        # Brute-force targets, and each attempt runs an intentionally slow KDF -- so an
+        # uncapped login is both a credential risk and a CPU denial-of-service.
+        return config.RATE_LIMIT_AUTH
+    if clean.endswith("/meetings"):
+        return config.RATE_LIMIT_UPLOAD  # queues ASR + LLM work: the most expensive call
+    if clean.endswith(("/chat", "/meetings/sample")):
         return config.RATE_LIMIT_CHAT
     return config.RATE_LIMIT_DEFAULT
 

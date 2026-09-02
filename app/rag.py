@@ -78,8 +78,13 @@ def _context_header(meeting_title: str, text: str) -> str:
 
 
 def index_meeting(meeting_id: str) -> int:
-    """Chunk a stored meeting, embed the chunks, and persist them. Returns chunk count."""
-    meeting = storage.get_meeting(meeting_id)
+    """Chunk a stored meeting, embed the chunks, and persist them. Returns chunk count.
+
+    Reads unscoped because indexing runs on behalf of the system (the background worker
+    and the reindex endpoint), not on behalf of a request. Ownership is enforced where
+    the chunks are read back, in `storage.get_chunks`.
+    """
+    meeting = storage.get_meeting_unscoped(meeting_id)
     if meeting is None:
         return 0
     chunks = chunk_segments(meeting.get("segments") or [])
@@ -96,16 +101,25 @@ def index_meeting(meeting_id: str) -> int:
     return len(chunks)
 
 
-def reindex_all() -> dict:
-    """Ensure every meeting is indexed. Returns a small status summary."""
-    ids = [m["id"] for m in storage.list_meetings()]
-    already = storage.indexed_meeting_ids()
+def reindex_all(user_id: str) -> dict:
+    """Ensure every one of this user's meetings is indexed. Returns a status summary.
+
+    Only meetings that finished processing are indexed: a queued or failed meeting has
+    no transcript to chunk, and retrying it on every chat request would be wasted work.
+    """
+    meetings = [m for m in storage.list_meetings(user_id) if m.get("status") == "done"]
+    ids = [m["id"] for m in meetings]
+    already = storage.indexed_meeting_ids(user_id)
     newly = 0
     for mid in ids:
         if mid not in already:
             index_meeting(mid)
             newly += 1
-    return {"meetings": len(ids), "newly_indexed": newly, "total_chunks": storage.count_chunks()}
+    return {
+        "meetings": len(ids),
+        "newly_indexed": newly,
+        "total_chunks": storage.count_chunks(user_id),
+    }
 
 
 # --------------------------------------------------------------------- BM25 (lexical)
@@ -229,12 +243,12 @@ def _normalize(values: list[float]) -> list[float]:
 
 
 # --------------------------------------------------------------------- retrieval
-def retrieve(question: str, scope_meeting_id: str | None = None) -> dict:
-    """Hybrid retrieval over indexed chunks.
+def retrieve(question: str, user_id: str, scope_meeting_id: str | None = None) -> dict:
+    """Hybrid retrieval over one user's indexed chunks.
 
     Returns {"ranked": [chunk+score...], "dense_best": float, "dense_used": bool}.
     """
-    chunks = storage.get_chunks(scope_meeting_id)
+    chunks = storage.get_chunks(user_id, scope_meeting_id)
     if not chunks:
         return {"ranked": [], "dense_best": 0.0, "dense_used": False, "empty": True}
 
@@ -332,13 +346,13 @@ def _format_context(chunks: list[dict]) -> str:
 REFUSAL = "I couldn't find anything about that in your meetings."
 
 
-def answer(question: str, scope_meeting_id: str | None = None) -> dict:
-    """Answer a question over the indexed meetings, grounded in retrieved excerpts."""
+def answer(question: str, user_id: str, scope_meeting_id: str | None = None) -> dict:
+    """Answer a question over one user's meetings, grounded in retrieved excerpts."""
     question = (question or "").strip()
     if not question:
         return {"answer": "Please enter a question.", "citations": [], "mode": "error"}
 
-    result = retrieve(question, scope_meeting_id)
+    result = retrieve(question, user_id, scope_meeting_id)
     if result.get("empty"):
         return {
             "answer": "No meetings have been indexed yet. Add a meeting first.",
@@ -378,10 +392,10 @@ def answer(question: str, scope_meeting_id: str | None = None) -> dict:
     return {"answer": text.strip(), "citations": citations, "mode": "answer"}
 
 
-def status() -> dict:
+def status(user_id: str) -> dict:
     return {
         "embeddings_available": embeddings.available(),
         "embed_model": config.EMBED_MODEL,
-        "indexed_meetings": len(storage.indexed_meeting_ids()),
-        "total_chunks": storage.count_chunks(),
+        "indexed_meetings": len(storage.indexed_meeting_ids(user_id)),
+        "total_chunks": storage.count_chunks(user_id),
     }

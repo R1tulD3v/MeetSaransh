@@ -7,6 +7,42 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- Sign-in gate. Shown until a session exists; everything behind it is per-user. -->
+  <div id="auth-gate" class="auth-gate">
+    <form id="auth-form" class="auth-card">
+      <div class="auth-brand">
+        <span class="logo">&#127897;&#65039;</span>
+        <div>
+          <h1>MeetSaransh</h1>
+          <p class="tag">Your meetings, transcribed and searchable.</p>
+        </div>
+      </div>
+
+      <div class="auth-tabs">
+        <button type="button" id="auth-tab-login" class="auth-tab auth-tab-active">Sign in</button>
+        <button type="button" id="auth-tab-register" class="auth-tab">Create account</button>
+      </div>
+
+      <label class="field">
+        <span>Email</span>
+        <input id="auth-email" type="email" autocomplete="email" required
+               placeholder="you@example.com" />
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input id="auth-password" type="password" autocomplete="current-password"
+               required minlength="8" placeholder="At least 8 characters" />
+      </label>
+
+      <button id="auth-submit" class="btn btn-primary" type="submit">Sign in</button>
+      <p id="auth-hint" class="hint"></p>
+      <p class="auth-note">
+        Meetings are private to your account. Nobody else can read them or ask
+        questions about them.
+      </p>
+    </form>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="logo">🎙️</span>
@@ -19,7 +55,11 @@
       <button id="nav-meetings" class="navbtn navbtn-active" data-view="meetings">📋 Meetings</button>
       <button id="nav-ask" class="navbtn" data-view="ask">💬 Ask your meetings</button>
     </nav>
-    <div id="status-badge" class="badge badge-muted">checking…</div>
+    <div class="topbar-right">
+      <div id="status-badge" class="badge badge-muted">checking…</div>
+      <span id="user-email" class="user-email"></span>
+      <button id="logout-btn" class="btn btn-ghost btn-compact" type="button">Sign out</button>
+    </div>
   </header>
 
   <main class="layout">
@@ -67,7 +107,12 @@
 
         <audio id="audio-player" controls class="audio hidden"></audio>
 
-        <nav class="tabs">
+        <!-- Shown while a meeting is queued/processing/failed. A separate element,
+             not a takeover of #tab-summary: rewriting that panel's innerHTML would
+             destroy the blocks renderSummary() writes into, and they never come back. -->
+        <div id="processing-panel" class="processing-state hidden"></div>
+
+        <nav class="tabs" id="detail-tabs">
           <button class="tab tab-active" data-tab="summary">Summary</button>
           <button class="tab" data-tab="transcript">Transcript</button>
         </nav>

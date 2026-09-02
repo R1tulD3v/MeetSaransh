@@ -37,8 +37,78 @@ function toast(msg, isError) {
 // The API version lives here and nowhere else, so bumping it is a one-line change.
 const API = "/api/v1";
 
-async function api(path, opts) {
-  const res = await fetch(API + path, opts);
+// ------------------------------------------------------------------ session
+// Tokens live in localStorage so a refresh does not sign the user out. That trades a
+// little XSS exposure for usability; the mitigation is that the app has a strict CSP
+// with no inline script, and the access token expires in 30 minutes.
+const TOKEN_KEY = "meetsaransh.tokens";
+let session = null;
+
+function loadSession() {
+  try {
+    session = JSON.parse(localStorage.getItem(TOKEN_KEY) || "null");
+  } catch (_) {
+    session = null;
+  }
+  return session;
+}
+
+function saveSession(tokens) {
+  session = tokens;
+  try { localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens)); } catch (_) {}
+}
+
+function clearSession() {
+  session = null;
+  try { localStorage.removeItem(TOKEN_KEY); } catch (_) {}
+}
+
+function authHeaders() {
+  return session && session.access_token
+    ? { Authorization: "Bearer " + session.access_token }
+    : {};
+}
+
+// A single in-flight refresh, shared by every 401 that arrives while it runs. Without
+// this, ten concurrent requests expiring together would fire ten refreshes and nine of
+// them would fail, because refresh tokens are single-use.
+let refreshInFlight = null;
+
+async function refreshSession() {
+  if (!session || !session.refresh_token) return false;
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(API + "/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((tokens) => {
+        if (tokens) { saveSession(tokens); return true; }
+        clearSession();
+        return false;
+      })
+      .catch(() => false)
+      .finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
+
+async function api(path, opts, _retried) {
+  opts = opts || {};
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), ...authHeaders() },
+  });
+
+  // An expired access token is the normal case after 30 minutes, not an error: try one
+  // silent refresh before bothering the user with a sign-in form.
+  if (res.status === 401 && !_retried && session) {
+    if (await refreshSession()) return api(path, opts, true);
+    showAuthGate("Your session expired. Sign in again.");
+    throw new Error("Session expired.");
+  }
+
   if (!res.ok) {
     // The server returns {"error": {code, message, request_id}} on every failure.
     // `detail` is the older FastAPI shape, kept as a fallback.
@@ -64,6 +134,100 @@ async function api(path, opts) {
 
 // ------------------------------------------------------------------ state
 let currentId = null;
+let pollTimer = null;
+let authMode = "login";
+
+// ------------------------------------------------------------------ auth UI
+function showAuthGate(message) {
+  clearSession();
+  stopPolling();
+  $("#auth-gate").classList.remove("hidden");
+  const hint = $("#auth-hint");
+  hint.className = message ? "hint error" : "hint";
+  hint.textContent = message || "";
+}
+
+function hideAuthGate() {
+  $("#auth-gate").classList.add("hidden");
+  $("#auth-hint").textContent = "";
+  $("#auth-password").value = "";
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const isLogin = mode === "login";
+  $("#auth-tab-login").classList.toggle("auth-tab-active", isLogin);
+  $("#auth-tab-register").classList.toggle("auth-tab-active", !isLogin);
+  $("#auth-submit").textContent = isLogin ? "Sign in" : "Create account";
+  $("#auth-password").setAttribute(
+    "autocomplete", isLogin ? "current-password" : "new-password"
+  );
+  $("#auth-hint").textContent = "";
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const email = $("#auth-email").value.trim();
+  const password = $("#auth-password").value;
+  const hint = $("#auth-hint");
+  const button = $("#auth-submit");
+
+  hint.className = "hint";
+  hint.textContent = authMode === "login" ? "Signing in…" : "Creating your account…";
+  button.disabled = true;
+  try {
+    // Deliberately not via api(): there is no session yet, so the 401 refresh path
+    // must not run -- a failed sign-in would otherwise recurse into itself.
+    const res = await fetch(API + "/auth/" + (authMode === "login" ? "login" : "register"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error((body.error && body.error.message) || "Could not sign you in.");
+    }
+    saveSession(body);
+    hideAuthGate();
+    await startSession(body.user);
+    toast(authMode === "login" ? "Signed in ✓" : "Account created ✓");
+  } catch (err) {
+    hint.className = "hint error";
+    hint.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function signOut() {
+  try { await api("/auth/logout", { method: "POST" }); } catch (_) {}
+  currentId = null;
+  $("#meeting-view").classList.add("hidden");
+  $("#empty-state").classList.remove("hidden");
+  $("#meeting-list").innerHTML = "";
+  $("#user-email").textContent = "";
+  showAuthGate("");
+  setAuthMode("login");
+}
+
+async function startSession(user) {
+  $("#user-email").textContent = user.email;
+  await Promise.all([loadHealth(), loadMeetings()]);
+  loadRagStatus();
+}
+
+/** Restore a session from localStorage, or show the gate. */
+async function boot() {
+  setAuthMode("login");
+  if (!loadSession()) { showAuthGate(""); return; }
+  try {
+    const user = await api("/auth/me");
+    hideAuthGate();
+    await startSession(user);
+  } catch (_) {
+    showAuthGate("");
+  }
+}
 
 // ------------------------------------------------------------------ health / badge
 async function loadHealth() {
@@ -103,8 +267,60 @@ async function loadMeetings() {
     const title = el("div", "mi-title", m.title);
     const meta = el("div", "mi-meta", `${new Date(m.created_at).toLocaleString()} · ${secondsToTs(m.duration)}`);
     li.append(title, meta);
+    // A meeting that is still processing is a real row, so it has to read as one that
+    // is not finished rather than as one that is empty.
+    if (m.status && m.status !== "done") {
+      li.classList.add("pending");
+      li.append(el("div", "mi-status " + m.status, STATUS_LABEL[m.status] || m.status));
+    }
     li.addEventListener("click", () => openMeeting(m.id));
     list.appendChild(li);
+  }
+  syncPolling(meetings);
+}
+
+const STATUS_LABEL = {
+  queued: "Queued…",
+  processing: "Processing…",
+  error: "Failed",
+};
+
+const STAGE_LABEL = {
+  transcribing: "Transcribing the audio…",
+  summarizing: "Writing the summary…",
+  indexing: "Indexing for search…",
+};
+
+// ------------------------------------------------------------------ polling
+// Polling runs only while something is actually in flight, and stops the moment the
+// queue drains -- a timer that keeps firing forever is a battery and quota leak.
+const POLL_MS = 2500;
+
+function syncPolling(meetings) {
+  const busy = meetings.some((m) => m.status === "queued" || m.status === "processing");
+  if (busy && !pollTimer) {
+    pollTimer = setInterval(pollOnce, POLL_MS);
+  } else if (!busy) {
+    stopPolling();
+  }
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+async function pollOnce() {
+  try {
+    const before = currentId ? await api("/meetings/" + currentId).catch(() => null) : null;
+    await loadMeetings();
+    // Re-render the open meeting when it finishes, so the user does not have to click
+    // away and back to see the summary appear.
+    if (before && currentId === before.id) {
+      if (before.status === "done") { renderMeeting(before); loadRagStatus(); }
+      else renderProcessing(before);
+    }
+  } catch (_) {
+    stopPolling();  // the session is gone or the server is down; stop hammering it
   }
 }
 
@@ -167,7 +383,56 @@ function tsChip(ts) {
   return a;
 }
 
+/** Show or hide the progress panel, hiding the tabs while it is up. */
+function setProcessingView(on) {
+  $("#processing-panel").classList.toggle("hidden", !on);
+  $("#detail-tabs").classList.toggle("hidden", on);
+  $("#export-btn").disabled = on;  // there is no summary to copy yet
+  if (on) {
+    $("#tab-summary").classList.add("hidden");
+    $("#tab-transcript").classList.add("hidden");
+  }
+  // Turning it off does not reveal a panel here: renderMeeting() calls switchTab()
+  // right afterwards, which is the single place that decides which tab is showing.
+}
+
+/** A meeting that has no transcript yet gets a progress screen, not an empty one. */
+function renderProcessing(m) {
+  $("#empty-state").classList.add("hidden");
+  $("#meeting-view").classList.remove("hidden");
+  $("#mv-title").textContent = m.title;
+  $("#mv-meta").textContent = new Date(m.created_at).toLocaleString();
+  $("#audio-player").classList.add("hidden");
+
+  const panel = $("#processing-panel");
+  panel.innerHTML = "";
+
+  if (m.status === "error") {
+    panel.append(
+      el("h2", null, "Processing failed"),
+      el("p", null, m.error || "Something went wrong while processing this recording.")
+    );
+    const retry = el("button", "btn btn-ghost", "Delete and try again");
+    retry.addEventListener("click", deleteMeeting);
+    panel.append(retry);
+  } else {
+    panel.append(
+      el("div", "spinner-ring"),
+      el("h2", null, STATUS_LABEL[m.status] || "Working…"),
+      el(
+        "p",
+        null,
+        (STAGE_LABEL[m.stage] || "Your recording is in the queue.") +
+          " You can close this tab - processing continues on the server."
+      )
+    );
+  }
+  setProcessingView(true);
+}
+
 function renderMeeting(m) {
+  if (m.status && m.status !== "done") { renderProcessing(m); return; }
+  setProcessingView(false);
   $("#empty-state").classList.add("hidden");
   $("#meeting-view").classList.remove("hidden");
   $("#mv-title").textContent = m.title;
@@ -337,17 +602,19 @@ async function uploadMeeting() {
   form.append("title", $("#title-input").value.trim());
 
   $("#upload-btn").disabled = true;
-  showLoader(true, "Transcribing & summarizing… this can take a moment.");
+  showLoader(true, "Uploading…");
   try {
-    const m = await api("/meetings", { method: "POST", body: form });
-    currentId = m.id;
+    // 202: the server has the file and has queued the work. From here the meeting is
+    // polled rather than awaited, so a long recording cannot be lost to a timeout.
+    const accepted = await api("/meetings", { method: "POST", body: form });
+    currentId = accepted.id;
     await loadMeetings();
     showLoader(false);
-    renderMeeting(m);
+    renderProcessing({ ...accepted, stage: null });
     document.querySelectorAll("#meeting-list .item").forEach((li) =>
-      li.classList.toggle("active", li.dataset.id === m.id));
+      li.classList.toggle("active", li.dataset.id === accepted.id));
     fileInput.value = ""; $("#title-input").value = "";
-    toast("Meeting processed ✓");
+    toast("Uploaded - transcribing in the background ✓");
   } catch (err) {
     showLoader(false);
     hint.className = "hint error";
@@ -502,6 +769,15 @@ $("#upload-btn").addEventListener("click", uploadMeeting);
 $("#sample-btn").addEventListener("click", loadSample);
 $("#export-btn").addEventListener("click", exportMarkdown);
 $("#delete-btn").addEventListener("click", deleteMeeting);
+$("#auth-form").addEventListener("submit", submitAuth);
+$("#auth-tab-login").addEventListener("click", () => setAuthMode("login"));
+$("#auth-tab-register").addEventListener("click", () => setAuthMode("register"));
+$("#logout-btn").addEventListener("click", signOut);
+// Leaving an interval running against a hidden tab wastes the user's battery and
+// their rate-limit budget for no benefit.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else loadMeetings().catch(() => {});
+});
 
-loadHealth();
-loadMeetings();
+boot();

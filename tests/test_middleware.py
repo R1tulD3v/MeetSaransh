@@ -136,16 +136,16 @@ def test_forwarded_headers_are_ignored_unless_a_proxy_is_trusted(monkeypatch):
     request = _fake_request(client_host="10.0.0.1", forwarded="1.2.3.4")
 
     monkeypatch.setattr(config, "TRUST_PROXY_HEADERS", False)
-    assert middleware.client_key(request) == "10.0.0.1"
+    assert middleware.client_key(request) == "ip:10.0.0.1"
 
     monkeypatch.setattr(config, "TRUST_PROXY_HEADERS", True)
-    assert middleware.client_key(request) == "1.2.3.4"
+    assert middleware.client_key(request) == "ip:1.2.3.4"
 
 
 def test_the_first_hop_is_used_from_a_forwarded_chain(monkeypatch):
     monkeypatch.setattr(config, "TRUST_PROXY_HEADERS", True)
     request = _fake_request(client_host="10.0.0.1", forwarded="1.2.3.4, 5.6.7.8")
-    assert middleware.client_key(request) == "1.2.3.4"
+    assert middleware.client_key(request) == "ip:1.2.3.4"
 
 
 def _fake_request(*, client_host: str, forwarded: str):

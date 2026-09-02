@@ -8,14 +8,20 @@ from fastapi.testclient import TestClient
 
 from app import embeddings, errors, storage
 from app.main import app
+from tests.conftest import TEST_EMAIL, TEST_PASSWORD, sign_up
 
 
 # ------------------------------------------------------------------- unhandled crashes
 @pytest.fixture
 def crashing_client(without_api_key, monkeypatch):
-    """A client that returns the server's 500 instead of re-raising the exception."""
-    monkeypatch.setattr(storage, "count_meetings", _boom)
+    """A client that returns the server's 500 instead of re-raising the exception.
+
+    Signed in first, then broken: an unauthenticated request is rejected at the auth
+    dependency and never reaches the code under test.
+    """
     with TestClient(app, raise_server_exceptions=False) as c:
+        sign_up(c, TEST_EMAIL, TEST_PASSWORD)
+        monkeypatch.setattr(storage, "count_meetings", _boom)
         yield c
 
 

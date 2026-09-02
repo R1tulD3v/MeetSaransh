@@ -1,4 +1,4 @@
-# MeetSaransh runtime dependencies — deliberately minimal.
+# MeetSaransh runtime dependencies - deliberately minimal.
 # Development/CI tooling lives in requirements-dev.txt.
 fastapi==0.115.6           # web framework + request/response validation
 uvicorn==0.34.0            # ASGI server to run the app
@@ -10,9 +10,15 @@ python-dotenv==1.0.1       # load configuration from a local .env file
 fastembed==0.8.0           # local bge-small embeddings via ONNX (no torch, no API key)
 numpy==2.5.2               # vector math for cosine similarity over stored embeddings
 
+# --- Auth ---
+# Signing a JWT is easy; verifying one safely is not (alg confusion, `alg: none`,
+# expiry handling). Auth is the last place to save a dependency. Password hashing
+# uses stdlib hashlib.scrypt -- see app/auth.py for why.
+pyjwt==2.10.1              # JWT access + refresh tokens
+
 # --- Observability ---
 prometheus-client==0.21.1  # /metrics in Prometheus text exposition format (no deps)
 
-# Storage (SQLite), structured logging, and JSON handling use the Python standard
-# library on purpose, to keep the dependency footprint small (see README "Design
-# decisions").
+# Storage (SQLite), background job execution, structured logging, and JSON handling use
+# the Python standard library on purpose, to keep the dependency footprint small (see
+# README "Design decisions").

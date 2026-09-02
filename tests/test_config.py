@@ -60,8 +60,54 @@ def test_wildcard_cors_is_merely_unwise_in_development(monkeypatch):
 
 def test_disabled_rate_limiting_in_production_is_flagged(monkeypatch, with_api_key):
     monkeypatch.setattr(config, "IS_PRODUCTION", True)
+    monkeypatch.setattr(config, "JWT_SECRET_WAS_GENERATED", False)  # else it fails harder
     monkeypatch.setattr(config, "RATE_LIMIT_ENABLED", False)
     assert any("Rate limiting" in w for w in config.validate())
+
+
+# ---------------------------------------------------------------------------- auth config
+def test_production_refuses_to_start_without_an_explicit_jwt_secret(monkeypatch):
+    """A generated secret changes on every restart, logging every user out, and cannot
+    be shared across replicas -- so in production it is a hard failure, not a warning."""
+    monkeypatch.setattr(config, "IS_PRODUCTION", True)
+    monkeypatch.setattr(config, "JWT_SECRET_WAS_GENERATED", True)
+    with pytest.raises(config.ConfigError, match="JWT_SECRET"):
+        config.validate()
+
+
+def test_a_generated_secret_is_only_a_warning_in_development(monkeypatch):
+    monkeypatch.setattr(config, "IS_PRODUCTION", False)
+    monkeypatch.setattr(config, "JWT_SECRET_WAS_GENERATED", True)
+    assert any("JWT_SECRET" in w for w in config.validate())
+
+
+def test_a_short_jwt_secret_is_rejected(monkeypatch):
+    """Short enough to brute-force offline is short enough to forge any user's token."""
+    monkeypatch.setattr(config, "JWT_SECRET_WAS_GENERATED", False)
+    monkeypatch.setattr(config, "JWT_SECRET", "tooshort")
+    with pytest.raises(config.ConfigError, match="at least"):
+        config.validate()
+
+
+def test_there_is_no_hardcoded_default_jwt_secret():
+    """A shipped default is a shipped forgery key: anyone who reads the source could
+    mint a valid token for any account on every deployment that kept the default."""
+    source = (config.BASE_DIR / "app" / "config.py").read_text(encoding="utf-8")
+    assert 'JWT_SECRET: str = _env_str("JWT_SECRET") or secrets.token_urlsafe' in source
+
+
+@pytest.mark.parametrize("field", ["ACCESS_TOKEN_MINUTES", "REFRESH_TOKEN_DAYS"])
+def test_nonsensical_token_lifetimes_are_rejected(monkeypatch, field):
+    monkeypatch.setattr(config, "JWT_SECRET_WAS_GENERATED", False)
+    monkeypatch.setattr(config, field, 0)
+    with pytest.raises(config.ConfigError, match="Token lifetimes"):
+        config.validate()
+
+
+def test_a_worker_count_below_one_is_rejected(monkeypatch):
+    monkeypatch.setattr(config, "JOB_WORKERS", 0)
+    with pytest.raises(config.ConfigError, match="JOB_WORKERS"):
+        config.validate()
 
 
 # ------------------------------------------------------------------- env var coercion
