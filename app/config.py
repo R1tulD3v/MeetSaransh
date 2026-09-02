@@ -68,6 +68,29 @@ RAG_TOP_K: int = _env_int("RAG_TOP_K", 6)  # excerpts fed to the LLM per questio
 # passed to the LLM, whose grounded prompt is the real "not discussed" guard.
 RAG_MIN_SCORE: float = _env_float("RAG_MIN_SCORE", 0.50)
 
+# --- Reranking ---
+# A cross-encoder reads the question and a chunk together, so it scores their actual
+# relationship rather than the distance between two precomputed vectors. Accurate, and
+# far too slow to run over a whole corpus -- so the retriever supplies a wide candidate
+# set and the cross-encoder only reorders that.
+#
+# DEFAULT OFF, on evidence. `python -m evaluation.run --mode hybrid --rerank` measured
+# it making results slightly WORSE on the current corpus: recall@3 1.000 -> 0.962,
+# MRR@3 0.923 -> 0.897, and paraphrase recall@3 1.000 -> 0.875. That is not a surprise
+# once stated plainly -- the eval corpus is 5 chunks, so reranking 5 candidates down to
+# 3 has almost nothing to reorder, and the cross-encoder's read of a ~130-word
+# conversational chunk is worse than the hybrid score it is overriding.
+#
+# It is kept, tested and configurable rather than deleted, because the picture should
+# invert once a corpus is large enough that the retriever's top-20 contains genuine
+# near-misses. Turn it on with RERANK_ENABLED=true and re-run the harness against your
+# own data before believing it helps.
+RERANK_ENABLED: bool = _env_bool("RERANK_ENABLED", False)
+RERANK_MODEL: str = _env_str("RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
+# How many chunks the retriever hands the reranker. Too few and there is nothing left
+# to reorder; too many and every question pays for scoring text it will never use.
+RERANK_CANDIDATES: int = _env_int("RERANK_CANDIDATES", 20)
+
 # --- Upload limits ---
 # Groq's transcription endpoint caps a single file at 25 MB. We reject earlier with a
 # clear message rather than letting the provider return an opaque error.
@@ -173,6 +196,12 @@ def validate() -> list[str]:
         )
     if RAG_TOP_K < 1:
         raise ConfigError("RAG_TOP_K must be at least 1.")
+    if RERANK_CANDIDATES < RAG_TOP_K:
+        raise ConfigError(
+            f"RERANK_CANDIDATES ({RERANK_CANDIDATES}) must be at least RAG_TOP_K "
+            f"({RAG_TOP_K}); reranking fewer candidates than we return cannot reorder "
+            "anything."
+        )
     if MAX_UPLOAD_BYTES < 1024:
         raise ConfigError("MAX_UPLOAD_BYTES is implausibly small.")
     if IS_PRODUCTION and "*" in CORS_ORIGINS:

@@ -94,6 +94,7 @@ def evaluate(
     *,
     judge: bool = False,
     alpha: float | None = None,
+    rerank: bool = False,
 ):
     """Run every labelled question through one retrieval configuration.
 
@@ -107,6 +108,8 @@ def evaluate(
 
     dataset = _load_dataset()
     label = mode if alpha is None else f"a={alpha:g}"
+    if rerank:
+        label += "+rr"
     card = metrics.Scorecard(label=label, k=k)
 
     real_key = config.GROQ_API_KEY
@@ -114,14 +117,14 @@ def evaluate(
         config.GROQ_API_KEY = ""
 
     for item in dataset["questions"]:
-        retrieved = rag.retrieve(item["question"], user_id, mode=mode, alpha=alpha)
+        retrieved = rag.retrieve(item["question"], user_id, mode=mode, alpha=alpha, rerank=rerank)
         ranked = retrieved["ranked"][:k]
         texts = [c["text"] for c in ranked]
         expected_meeting = id_map[item["meeting_id"]]
 
         # The full pipeline, not just retrieval: a question whose evidence was found
         # but which the refusal gate then rejected is still a product failure.
-        answered = rag.answer(item["question"], user_id)
+        answered = rag.answer(item["question"], user_id, rerank=rerank)
 
         card.results.append(
             metrics.QuestionResult(
@@ -146,7 +149,7 @@ def evaluate(
 
     for item in dataset["off_topic"]:
         card.off_topic_total += 1
-        if rag.answer(item["question"], user_id)["mode"] == "refused":
+        if rag.answer(item["question"], user_id, rerank=rerank)["mode"] == "refused":
             card.off_topic_refused += 1
 
     if card.judged:
@@ -225,6 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Retrieval depths to score (default: 1 3 and RAG_TOP_K).",
     )
     parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="Also score each mode with cross-encoder reranking, for an A/B.",
+    )
+    parser.add_argument(
         "--alpha-sweep",
         action="store_true",
         help="Sweep the hybrid dense/lexical weight instead of comparing modes.",
@@ -283,9 +291,15 @@ def main(argv: list[str] | None = None) -> int:
                         evaluate("hybrid", k, user_id, id_map, judge=args.judge, alpha=alpha)
                     )
         else:
+            # With --rerank each mode is scored twice, off and on, so the two rows sit
+            # next to each other and the comparison is like-for-like.
+            rerank_arms = [False, True] if args.rerank else [False]
             for mode in modes:
-                for k in ks:
-                    cards.append(evaluate(mode, k, user_id, id_map, judge=args.judge))
+                for rr in rerank_arms:
+                    for k in ks:
+                        cards.append(
+                            evaluate(mode, k, user_id, id_map, judge=args.judge, rerank=rr)
+                        )
 
         _print_table(cards, chunk_count, args.verbose)
 

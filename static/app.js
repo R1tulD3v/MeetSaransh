@@ -735,29 +735,136 @@ async function askQuestion(question) {
   $("#chat-q").value = "";
   $("#chat-send").disabled = true;
   const typing = addMsg("typing", (n) => (n.textContent = "Searching your meetings…"));
+  const scope = $("#chat-scope").value || null;
+
   try {
-    const scope = $("#chat-scope").value || null;
-    const r = await api("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, meeting_id: scope }),
-    });
-    typing.remove();
-    const refused = r.mode === "refused" || r.mode === "empty";
-    addMsg("msg-bot" + (refused ? " refused" : ""), (n) => {
-      if (r.note) n.appendChild(el("div", "msg-note", r.note));
-      if (r.answer) n.appendChild(el("div", "msg-answer", r.answer));
-      else if (r.mode === "retrieval_only") n.appendChild(el("div", "msg-answer", "Here are the most relevant excerpts:"));
-      renderCitations(n, r.citations);
-    });
+    await streamAnswer(question, scope, typing);
     loadRagStatus();
   } catch (err) {
-    typing.remove();
-    addMsg("msg-bot refused", (n) => (n.textContent = err.message));
+    // Streaming is an enhancement, so any failure to establish it falls back to the
+    // buffered endpoint rather than costing the user their answer.
+    try {
+      await bufferedAnswer(question, scope, typing);
+      loadRagStatus();
+    } catch (fallbackErr) {
+      typing.remove();
+      addMsg("msg-bot refused", (n) => (n.textContent = fallbackErr.message || err.message));
+    }
   } finally {
     $("#chat-send").disabled = false;
     $("#chat-q").focus();
   }
+}
+
+/**
+ * Read the SSE stream and paint it as it arrives.
+ *
+ * fetch + a ReadableStream reader rather than EventSource, for one decisive reason:
+ * EventSource cannot send an Authorization header or a POST body, and every route here
+ * is authenticated. Parsing the frames by hand is a dozen lines and keeps the endpoint
+ * identical to every other one.
+ */
+async function streamAnswer(question, scope, typing) {
+  const res = await fetch(API + "/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ question, meeting_id: scope }),
+  });
+  if (!res.ok || !res.body) throw new Error("Streaming unavailable.");
+
+  let bubble = null;
+  let answerNode = null;
+  let text = "";
+
+  const ensureBubble = (cls) => {
+    if (!bubble) {
+      typing.remove();
+      bubble = addMsg("msg-bot" + (cls || ""), () => {});
+    }
+    return bubble;
+  };
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // Frames are separated by a blank line; anything after the last one is a partial
+    // frame and stays in the buffer until the rest of it arrives.
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop();
+
+    for (const frame of frames) {
+      const line = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!line) continue;
+      let event;
+      try { event = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+
+      if (event.type === "citations") {
+        // Sources first: the reader can start checking the evidence while the answer
+        // is still being written.
+        ensureBubble();
+        answerNode = el("div", "msg-answer streaming");
+        bubble.appendChild(answerNode);
+        renderCitations(bubble, event.citations);
+      } else if (event.type === "delta") {
+        ensureBubble();
+        if (!answerNode) {
+          answerNode = el("div", "msg-answer streaming");
+          bubble.appendChild(answerNode);
+        }
+        text += event.text;
+        answerNode.textContent = text;
+        scrollChatToBottom();
+      } else if (event.type === "error") {
+        ensureBubble(" refused");
+        bubble.appendChild(el("div", "msg-note", event.message));
+      } else if (event.type === "done") {
+        const refused = event.mode === "refused" || event.mode === "empty";
+        ensureBubble(refused ? " refused" : "");
+        if (event.answer) bubble.appendChild(el("div", "msg-answer", event.answer));
+        if (event.note) bubble.appendChild(el("div", "msg-note", event.note));
+        if (event.mode === "retrieval_only" && !text) {
+          bubble.insertBefore(
+            el("div", "msg-answer", "Here are the most relevant excerpts:"),
+            bubble.firstChild
+          );
+        }
+      }
+    }
+  }
+
+  if (!bubble) throw new Error("The answer stream ended without a response.");
+  if (answerNode) answerNode.classList.remove("streaming");
+  scrollChatToBottom();
+}
+
+/** The original buffered request, kept as the fallback path. */
+async function bufferedAnswer(question, scope, typing) {
+  const r = await api("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, meeting_id: scope }),
+  });
+  typing.remove();
+  const refused = r.mode === "refused" || r.mode === "empty";
+  addMsg("msg-bot" + (refused ? " refused" : ""), (n) => {
+    if (r.note) n.appendChild(el("div", "msg-note", r.note));
+    if (r.answer) n.appendChild(el("div", "msg-answer", r.answer));
+    else if (r.mode === "retrieval_only") {
+      n.appendChild(el("div", "msg-answer", "Here are the most relevant excerpts:"));
+    }
+    renderCitations(n, r.citations);
+  });
+}
+
+function scrollChatToBottom() {
+  const box = $("#chat-messages");
+  box.scrollTop = box.scrollHeight;
 }
 
 $("#chat-form").addEventListener("submit", (e) => {

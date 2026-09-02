@@ -20,12 +20,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, File, Form, Query, Response, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 from . import (
@@ -433,6 +438,65 @@ def api_chat(payload: schemas.ChatRequest, user: CurrentUser) -> schemas.ChatRes
     if config.METRICS_ENABLED:
         observability.RAG_ANSWERS.labels(result.get("mode", "unknown")).inc()
     return schemas.ChatResponse(**result)
+
+
+def _sse(event: dict) -> str:
+    """Frame one event for Server-Sent Events: `data: <json>` and a blank line.
+
+    The blank line is the frame terminator -- omit it and the browser buffers every
+    event forever, waiting for an end that never comes.
+    """
+    return f"data: {json.dumps(event)}\n\n"
+
+
+@api.post("/chat/stream", tags=["rag"])
+def api_chat_stream(payload: schemas.ChatRequest, user: CurrentUser) -> StreamingResponse:
+    """Answer a question as a Server-Sent Events stream.
+
+    SSE rather than WebSockets: this is one-directional, short-lived, and survives
+    proxies and reconnects for free. It is also plain HTTP, so it inherits the same
+    auth dependency, rate limit and error envelope as every other endpoint instead of
+    needing a parallel set of them.
+
+    The client keeps `POST /chat` as a fallback; both return the same modes.
+    """
+    if payload.meeting_id and storage.get_meeting(payload.meeting_id, user["id"]) is None:
+        raise APIError("Meeting not found.", status_code=404)
+
+    rag.reindex_all(user["id"])
+
+    def events() -> Iterator[str]:
+        mode = "error"
+        try:
+            for event in rag.answer_stream(
+                payload.question, user["id"], scope_meeting_id=payload.meeting_id
+            ):
+                mode = event.get("mode", mode)
+                yield _sse(event)
+        except Exception:
+            # A generator raising mid-stream cannot become a 500 -- the response has
+            # already started -- so the failure is delivered as a final event instead.
+            log.exception("chat stream failed", extra={"user_id": user["id"]})
+            failure = {
+                "type": "error",
+                "mode": "error",
+                "message": "The answer stream failed. The error has been logged.",
+            }
+            yield _sse(failure)
+        finally:
+            if config.METRICS_ENABLED:
+                observability.RAG_ANSWERS.labels(mode).inc()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            # Without this an intermediate proxy will happily buffer the whole stream
+            # and deliver it in one lump, which defeats the entire feature.
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 # ------------------------------------------------------------------------------ mounts

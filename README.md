@@ -23,9 +23,10 @@ across all your meetings** with grounded, cited answers.
 - **Grounded action items** - each with an owner (or `Unassigned`), a due date (or
   `Not specified`), and a `[mm:ss]` timestamp. The prompt is told **not to invent** them.
 - **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with a
-  written answer and **clickable citations** that jump to the exact transcript moment.
-  Honest by design: it says *"I couldn't find anything about that"* when a topic wasn't
-  discussed, instead of guessing.
+  **streamed** answer and **clickable citations** that jump to the exact transcript
+  moment. Citations arrive *before* the first token, so the sources are on screen while
+  the answer is still being written. Honest by design: it says *"I couldn't find
+  anything about that"* when a topic wasn't discussed, instead of guessing.
 - **Click-to-seek** everywhere - timestamps in the summary, transcript, and chat citations
   all seek the audio / scroll the transcript.
 - **Transcript search** with match highlighting.
@@ -45,7 +46,7 @@ across all your meetings** with grounded, cited answers.
   worker pool, with live status in the UI and recovery after a restart.
 - **A measured retrieval pipeline** - a labelled evaluation set, an ablation, and a
   regression gate in CI, not just an assertion that the RAG is good.
-- **486 tests, 98% coverage**, every provider call mocked - the suite runs offline.
+- **527 tests, 98% coverage**, every provider call mocked - the suite runs offline.
 - **CI on every push**: lint, format, types, tests + coverage gate, a retrieval-quality
   regression gate, dependency audit, Docker build and a container smoke test.
 - **Containerized**: multi-stage build, non-root user, real health check.
@@ -141,6 +142,50 @@ The interesting engineering is here, so it's worth spelling out:
   brute-force cosine in numpy. At this scale that's correct and simple - an ANN index
   (HNSW/IVFFlat) is the scaling path, not a demo requirement.
 
+### Streaming
+
+`POST /chat/stream` returns Server-Sent Events. Measured against live Groq: **citations
+at 0.11s, first token at 1.28s** - so the sources sit on screen for over a second before
+any prose appears, and a reader can start checking the evidence instead of watching a
+spinner. A mid-stream failure also still leaves them with the excerpts.
+
+- **SSE, not WebSockets.** The traffic is one-directional and short-lived. SSE is plain
+  HTTP, so it inherits the same auth dependency, rate limit and error envelope as every
+  other endpoint instead of needing a parallel set of them.
+- **`fetch` + a stream reader, not `EventSource`.** `EventSource` cannot send an
+  `Authorization` header or a POST body, and every route here is authenticated. Parsing
+  the frames by hand is a dozen lines.
+- **Streams are never retried.** `chat` retries on 429; `chat_stream` does not, because
+  the user has already been shown part of the previous attempt and a retry would splice
+  two different answers into one paragraph. If the failure happens *before* the first
+  token, nothing has been shown, so the client falls back to the buffered call.
+- **One refusal gate, shared.** Both paths call the same `_passes_refusal_gate`. Two
+  copies would eventually disagree, and the one users noticed would be whichever refused
+  a question the other answered. There is a test asserting it stays a single function.
+
+### Reranking - built, measured, and shipped off
+
+A cross-encoder reads the question and a chunk *together*, rather than comparing two
+precomputed vectors, so it should rank better than the retriever. `app/reranker.py`
+implements it with fastembed's ONNX cross-encoder (no torch, consistent with the
+embedding model).
+
+The harness says it does not help here:
+
+| Configuration | recall@3 | MRR@3 | paraphrase recall@3 |
+| --- | --- | --- | --- |
+| **hybrid (shipped)** | **1.000** | **0.923** | **1.000** |
+| hybrid + rerank | 0.962 | 0.897 | 0.875 |
+
+So `RERANK_ENABLED` defaults to **false**. The reason is not mysterious once stated: the
+eval corpus is 5 chunks, so reranking 5 candidates down to 3 has almost nothing to
+reorder, and the cross-encoder's read of a ~130-word conversational chunk is worse than
+the hybrid score it overrides. The picture should invert once a corpus is large enough
+that the retriever's top-20 contains genuine near-misses - which is exactly why the code
+is kept, tested and configurable rather than deleted. Turn it on with
+`RERANK_ENABLED=true` and re-run the harness against your own data before believing it
+helps.
+
 ---
 
 ## Measuring the retrieval pipeline
@@ -152,6 +197,7 @@ off-topic questions that must be refused.
 ```bash
 python -m evaluation.run                 # ablation: hybrid vs dense vs lexical
 python -m evaluation.run --alpha-sweep   # tune the hybrid weight
+python -m evaluation.run --rerank        # A/B the cross-encoder second stage
 python -m evaluation.run --mode lexical  # deterministic: no model, no network
 python -m evaluation.run --judge         # add LLM-as-judge faithfulness (needs a key)
 ```
@@ -173,7 +219,7 @@ Four design decisions worth defending:
 - **k is swept, not fixed.** With a small corpus a generous k retrieves everything and
   every configuration scores a meaningless 1.000.
 
-### It already changed a decision
+### It has already changed two decisions
 
 The hybrid weight shipped at `alpha = 0.65`. The sweep showed it scoring **0.875 recall
 on paraphrased questions - identical to lexical-only** - because BM25's confident wrong
@@ -193,6 +239,9 @@ a sample to justify deleting a retrieval component, and the lexical half does a 
 metric cannot see - it is the only thing that still works when the embedding model fails
 to load, and it matches exact tokens (names, ticket ids, error codes) that embeddings
 blur together. `0.8` takes the measured win without betting the feature on it.
+
+The second decision was reranking: built, measured, and left disabled because the
+numbers said so. See the RAG section above.
 
 **Honest limits of this harness.** 26 questions over 5 chunks is enough to catch a
 regression and to justify a weight change. It is not enough to certify a retrieval
@@ -256,6 +305,7 @@ app/
   deps.py          # get_current_user, require_admin
   jobs.py          # background transcription pool + crash recovery
   analytics.py     # cross-meeting SQL aggregations for the dashboard
+  reranker.py      # optional cross-encoder second stage (ships disabled - see below)
   config.py        # env-driven settings + startup validation
   schemas.py       # Pydantic request/response models (the API contract)
   errors.py        # one error envelope + centralized handlers
@@ -270,7 +320,7 @@ app/
   llm.py           # shared chat client + retry/backoff
   embeddings.py    # local dense embeddings (fastembed)
 static/            # index.html, style.css, app.js  (no framework)
-tests/             # 486 tests, providers mocked, no network
+tests/             # 527 tests, providers mocked, no network
 evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
 ops/               # Prometheus scrape config
 data/sample/       # bundled sample meeting (offline demo)
@@ -299,6 +349,7 @@ Every route below except `/health` and `/metrics` requires
 | `GET`  | `/api/v1/meetings/{id}/audio` , `/export` | stream audio , Markdown export |
 | `DELETE` | `/api/v1/meetings/{id}` | delete meeting + audio + chunks |
 | `POST` | `/api/v1/chat` | grounded Q&A (optional `meeting_id` scope) |
+| `POST` | `/api/v1/chat/stream` | the same answer as a Server-Sent Events stream |
 | `GET`  | `/api/v1/analytics` | cross-meeting aggregates (`?days=` window) |
 | `POST` | `/api/v1/reindex` | index any meetings not yet in the vector store |
 | `GET`  | `/api/v1/rag/status` | embeddings availability, indexed meeting/chunk counts |
@@ -493,13 +544,17 @@ Next up, in order:
 
 1. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
    plus Redis so the rate limiter and job queue are shared across processes.
-2. **Query rewriting and reranking** - now worth doing, because the harness can say
-   whether they actually help rather than assuming they do.
-3. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap.
-4. **Speaker diarization** - label "Speaker 1 -> Priya".
+2. **Query rewriting** - the remaining half of the retrieval-quality work, and now
+   measurable rather than assumed.
+3. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap (needs
+   ffmpeg).
+4. **Speaker diarization** - label "Speaker 1 -> Priya". Deliberately last: the usable
+   options need torch, which would undo the small-footprint story the rest of the
+   project is built on.
 
 Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling
-&nbsp; [x] measured retrieval with a CI regression gate &nbsp; [x] insights dashboard.
+&nbsp; [x] measured retrieval with a CI regression gate &nbsp; [x] insights dashboard
+&nbsp; [x] streamed answers &nbsp; [x] reranking (measured, shipped off).
 
 ---
 

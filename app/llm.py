@@ -6,7 +6,9 @@ error mapping, and retry live here in one place.
 
 from __future__ import annotations
 
+import json
 import time
+from collections.abc import Iterator
 
 import httpx
 
@@ -93,3 +95,54 @@ def _explain_http_error(resp: httpx.Response) -> str:
     if code == 429:
         return "LLM provider rate limit hit (429). Wait a moment and retry."
     return f"LLM provider error {code}: {detail}"
+
+
+def chat_stream(messages: list[dict], *, temperature: float = 0.2) -> Iterator[str]:
+    """Stream a chat completion, yielding content deltas as they arrive.
+
+    Deliberately NOT retried, unlike `chat`. A retry means starting the answer over, and
+    the caller has already shown the user the first half of the previous attempt -- so a
+    mid-stream failure is surfaced instead of silently producing a spliced answer. The
+    non-streaming path keeps its retries, and the caller falls back to it.
+    """
+    if not config.has_api_key():
+        raise LLMError("No GROQ_API_KEY configured.")
+
+    url = f"{config.GROQ_BASE_URL}/chat/completions"
+    headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}", "Content-Type": "application/json"}
+    body = {
+        "model": config.LLM_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+
+    started = time.monotonic()
+    try:
+        with httpx.stream(
+            "POST", url, headers=headers, json=body, timeout=config.HTTP_TIMEOUT_SECONDS
+        ) as response:
+            if response.status_code != 200:
+                response.read()  # the body is needed to explain the failure
+                _record("error", time.monotonic() - started)
+                raise LLMError(_explain_http_error(response))
+
+            for line in response.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(payload)["choices"][0]["delta"].get("content")
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    # A malformed frame is not worth aborting a good answer over; the
+                    # provider occasionally sends keep-alives and role-only deltas.
+                    continue
+                if delta:
+                    yield delta
+    except httpx.HTTPError as exc:
+        _record("network_error", time.monotonic() - started)
+        raise LLMError(f"network error: {exc}") from exc
+
+    _record("success", time.monotonic() - started)

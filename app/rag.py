@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterator
 from typing import Literal
 
-from . import config, embeddings, llm, prompts, storage
+from . import config, embeddings, llm, prompts, reranker, storage
 
 
 # --------------------------------------------------------------------- timestamps
@@ -273,11 +274,12 @@ def retrieve(
     *,
     mode: RetrievalMode = "hybrid",
     alpha: float | None = None,
+    rerank: bool | None = None,
 ) -> dict:
     """Hybrid retrieval over one user's indexed chunks.
 
     Returns {"ranked": [chunk+score...], "dense_best": float, "dense_used": bool}.
-    `mode` and `alpha` are evaluation levers: production always uses the defaults.
+    `mode`, `alpha` and `rerank` are evaluation levers: production uses the defaults.
     """
     chunks = storage.get_chunks(user_id, scope_meeting_id)
     if not chunks:
@@ -326,6 +328,22 @@ def retrieve(
 
     ranked = sorted(chunks, key=lambda c: c["score"], reverse=True)
     dense_best = max(dense_raw) if dense_raw else 0.0
+
+    # Second stage: hand the top candidates to the cross-encoder, which reads the
+    # question and each chunk together rather than comparing precomputed vectors.
+    # `dense_best` is captured above, before this reorders anything, because the
+    # refusal gate is a judgement about the corpus and must not shift depending on
+    # whether a reranker happened to load.
+    use_rerank = config.RERANK_ENABLED if rerank is None else rerank
+    reranked_used = False
+    if use_rerank and len(ranked) > 1:
+        candidates = ranked[: config.RERANK_CANDIDATES]
+        reordered = reranker.rerank(question, candidates, config.RERANK_CANDIDATES)
+        if reordered is not None:
+            # Anything past the candidate window keeps its retrieval order behind the
+            # reranked head, so nothing is silently dropped from the result.
+            ranked = reordered + ranked[config.RERANK_CANDIDATES :]
+            reranked_used = True
     # Does any meaningful query term literally appear in the corpus? This lets valid
     # keyword questions ("Rahul's action items") through even when the exact phrasing
     # isn't spoken, while clearly off-topic questions ("capital of France") stay out.
@@ -335,6 +353,7 @@ def retrieve(
         "ranked": ranked,
         "dense_best": dense_best,
         "dense_used": dense_used,
+        "reranked": reranked_used,
         "content_match": content_match,
         "empty": False,
     }
@@ -383,13 +402,33 @@ def _format_context(chunks: list[dict]) -> str:
 REFUSAL = "I couldn't find anything about that in your meetings."
 
 
-def answer(question: str, user_id: str, scope_meeting_id: str | None = None) -> dict:
+def _passes_refusal_gate(result: dict) -> bool:
+    """Refuse only when the question is neither semantically close (dense) NOR shares a
+    meaningful keyword with any meeting. Either signal is enough to attempt an answer;
+    the LLM prompt is the second grounding layer.
+
+    Shared by the streaming and non-streaming paths on purpose -- two copies of this
+    decision would eventually disagree, and the one users noticed would be whichever
+    said "I could not find that" about a question the other answered.
+    """
+    if result["dense_used"]:
+        return bool(result["dense_best"] >= config.RAG_MIN_SCORE or result["content_match"])
+    return bool(result["content_match"])
+
+
+def answer(
+    question: str,
+    user_id: str,
+    scope_meeting_id: str | None = None,
+    *,
+    rerank: bool | None = None,
+) -> dict:
     """Answer a question over one user's meetings, grounded in retrieved excerpts."""
     question = (question or "").strip()
     if not question:
         return {"answer": "Please enter a question.", "citations": [], "mode": "error"}
 
-    result = retrieve(question, user_id, scope_meeting_id)
+    result = retrieve(question, user_id, scope_meeting_id, rerank=rerank)
     if result.get("empty"):
         return {
             "answer": "No meetings have been indexed yet. Add a meeting first.",
@@ -403,11 +442,7 @@ def answer(question: str, user_id: str, scope_meeting_id: str | None = None) -> 
     # Grounded-refusal gate: refuse only when the question is neither semantically close
     # (dense) NOR shares a meaningful keyword with any meeting (lexical). Either signal
     # is enough to attempt an answer; the LLM prompt is the second grounding layer.
-    if result["dense_used"]:
-        relevant = result["dense_best"] >= config.RAG_MIN_SCORE or result["content_match"]
-    else:
-        relevant = result["content_match"]
-    if not relevant:
+    if not _passes_refusal_gate(result):
         return {"answer": REFUSAL, "citations": [], "mode": "refused"}
 
     citations = [_citation(c, question) for c in top]
@@ -429,9 +464,86 @@ def answer(question: str, user_id: str, scope_meeting_id: str | None = None) -> 
     return {"answer": text.strip(), "citations": citations, "mode": "answer"}
 
 
+def answer_stream(
+    question: str,
+    user_id: str,
+    scope_meeting_id: str | None = None,
+) -> Iterator[dict]:
+    """Answer a question, yielding events as the model produces them.
+
+    Yields dicts the transport turns into SSE frames:
+
+        {"type": "citations", "citations": [...]}   once, before any text
+        {"type": "delta", "text": "..."}            many
+        {"type": "done", "mode": "answer"}          once
+        {"type": "error", "message": "..."}         instead of `done`, on failure
+
+    Citations are sent FIRST, before a single token. They are known the moment
+    retrieval finishes, and sending them up front means the sources are on screen while
+    the answer is still being written -- so a reader can start checking the evidence
+    rather than watching a spinner. It also means a mid-stream failure still leaves the
+    user with the excerpts.
+    """
+    question = (question or "").strip()
+    if not question:
+        yield {"type": "error", "message": "Please enter a question.", "mode": "error"}
+        return
+
+    result = retrieve(question, user_id, scope_meeting_id)
+    if result.get("empty"):
+        yield {
+            "type": "done",
+            "mode": "empty",
+            "answer": "No meetings have been indexed yet. Add a meeting first.",
+        }
+        return
+
+    top = result["ranked"][: config.RAG_TOP_K]
+    if not _passes_refusal_gate(result):
+        yield {"type": "done", "mode": "refused", "answer": REFUSAL}
+        return
+
+    citations = [_citation(c, question) for c in top]
+    yield {"type": "citations", "citations": citations}
+
+    if not config.has_api_key():
+        yield {
+            "type": "done",
+            "mode": "retrieval_only",
+            "note": (
+                "Add a GROQ_API_KEY to get a written answer. These are the most relevant excerpts."
+            ),
+        }
+        return
+
+    messages = prompts.build_rag_messages(question, _format_context(top))
+    streamed = False
+    try:
+        for delta in llm.chat_stream(messages, temperature=0.2):
+            streamed = True
+            yield {"type": "delta", "text": delta}
+    except llm.LLMError as exc:
+        message = str(exc)
+        # Falling back is only safe if nothing has been shown yet: retrying mid-answer
+        # would splice two different attempts into one paragraph.
+        if not streamed:
+            try:
+                text = llm.chat(messages, temperature=0.2)
+                yield {"type": "delta", "text": text.strip()}
+                yield {"type": "done", "mode": "answer"}
+                return
+            except llm.LLMError as retry_exc:
+                message = str(retry_exc)
+        yield {"type": "error", "message": message, "mode": "error"}
+        return
+
+    yield {"type": "done", "mode": "answer"}
+
+
 def status(user_id: str) -> dict:
     return {
         "embeddings_available": embeddings.available(),
+        "reranker_available": reranker.available(),
         "embed_model": config.EMBED_MODEL,
         "indexed_meetings": len(storage.indexed_meeting_ids(user_id)),
         "total_chunks": storage.count_chunks(user_id),

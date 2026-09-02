@@ -370,3 +370,22 @@ mark { background: #ffe58a; color: inherit; border-radius: 3px; }
 .loose-item:hover { border-color: var(--brand); }
 .loose-task { font-size: 13.5px; }
 .loose-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+
+/* ------------------------------------------------------------------ streaming */
+/* A caret while tokens are still arriving, so a pause reads as "thinking" rather
+   than "broken". Removed the moment the stream completes. */
+.msg-answer.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--brand);
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+@keyframes caret-blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) {
+  .msg-answer.streaming::after { animation: none; opacity: .5; }
+}

@@ -152,6 +152,7 @@ class ChatResponse(BaseModel):
 
 class RagStatus(BaseModel):
     embeddings_available: bool
+    reranker_available: bool = False
     embed_model: str
     indexed_meetings: int
     total_chunks: int
