@@ -15,7 +15,7 @@ across all your meetings** with grounded, cited answers.
 `question -> hybrid retrieval -> grounded answer (LLM) -> cited excerpts`
 
 **Repository:** [github.com/R1tulD3v/MeetSaransh](https://github.com/R1tulD3v/MeetSaransh)
-**Live demo:** none hosted - runs locally in under two minutes, see [Getting Started](#getting-started)
+**Live demo:** [Live](https://meetsaransh.onrender.com/)
 **License:** no `LICENSE` file is currently checked into this repository (see [License](#license))
 
 ---
