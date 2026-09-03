@@ -4,7 +4,7 @@
 # stage gets only the finished virtualenv, so build tools never ship to production.
 
 # ------------------------------------------------------------------------- build stage
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -20,7 +20,7 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -r requirements.txt
 
 # ----------------------------------------------------------------------- runtime stage
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # Prefetch the ~90 MB embedding model into the image so the first question after a
 # deploy is fast and does not depend on huggingface.co being reachable at runtime.
