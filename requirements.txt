@@ -14,7 +14,7 @@ numpy==2.5.2               # vector math for cosine similarity over stored embed
 # Signing a JWT is easy; verifying one safely is not (alg confusion, `alg: none`,
 # expiry handling). Auth is the last place to save a dependency. Password hashing
 # uses stdlib hashlib.scrypt -- see app/auth.py for why.
-pyjwt==2.10.1              # JWT access + refresh tokens
+pyjwt==2.13.0              # JWT access + refresh tokens
 
 # --- Observability ---
 prometheus-client==0.21.1  # /metrics in Prometheus text exposition format (no deps)
