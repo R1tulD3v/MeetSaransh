@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: meetsaransh
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /api/v1/health
+    disk:
+      name: meetsaransh-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_JSON
+        value: "true"
+      # Render terminates TLS and proxies every request, so its forwarded headers
+      # are trustworthy here (unlike the docker-compose stack, which has no
+      # trusted proxy in front and sets this to false).
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      # Empty means same-origin only, which is correct as long as this service
+      # serves its own static frontend. Change if a separate frontend origin
+      # needs to call this API.
+      - key: CORS_ORIGINS
+        value: ""
+      # Secrets: set these in the Render dashboard, not here.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false

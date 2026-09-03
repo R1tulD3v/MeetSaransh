@@ -1,8 +1,9 @@
-# 🎙️ MeetSaransh - Meeting Summarizer
+# MeetSaransh - Meeting Summarizer
 
 [![CI](https://github.com/R1tulD3v/MeetSaransh/actions/workflows/ci.yml/badge.svg)](https://github.com/R1tulD3v/MeetSaransh/actions/workflows/ci.yml)
 ![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)
+![Tests](https://img.shields.io/badge/tests-577%20passing-brightgreen)
 
 Transcribe meeting audio, generate **action-oriented** summaries, and **ask questions
 across all your meetings** with grounded, cited answers.
@@ -13,82 +14,327 @@ across all your meetings** with grounded, cited answers.
 `audio -> validate -> transcribe (Whisper) -> summarize (LLM) -> store -> view`
 `question -> hybrid retrieval -> grounded answer (LLM) -> cited excerpts`
 
+**Repository:** [github.com/R1tulD3v/MeetSaransh](https://github.com/R1tulD3v/MeetSaransh)
+**Live demo:** none hosted - runs locally in under two minutes, see [Getting Started](#getting-started)
+**License:** no `LICENSE` file is currently checked into this repository (see [License](#license))
+
+---
+
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [Key Highlights](#key-highlights)
+- [Features](#features)
+- [Tech Stack](#tech-stack)
+- [System Architecture](#system-architecture)
+- [Request Lifecycle](#request-lifecycle)
+- [Folder Structure](#folder-structure)
+- [Getting Started](#getting-started)
+- [Environment Variables](#environment-variables)
+- [Usage](#usage)
+- [Screenshots](#screenshots)
+- ["Ask your meetings" - how the RAG works](#ask-your-meetings---how-the-rag-works)
+- [Measuring the retrieval pipeline](#measuring-the-retrieval-pipeline)
+- [Action items as state, not text](#action-items-as-state-not-text)
+- [The insights dashboard](#the-insights-dashboard)
+- [Engineering Decisions](#engineering-decisions)
+- [Background processing](#background-processing)
+- [Performance Considerations](#performance-considerations)
+- [Security](#security)
+- [Scalability](#scalability)
+- [Testing](#testing)
+- [API Documentation](#api-documentation)
+- [Database Design](#database-design)
+- [Deployment](#deployment)
+- [Challenges Faced](#challenges-faced)
+- [What I Learned](#what-i-learned)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
+- [Resume Talking Points](#resume-talking-points)
+- [Interview Talking Points](#interview-talking-points)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+
+---
+
+## Project Overview
+
+**The problem:** meeting notes are either skipped entirely or captured as a wall of
+prose that nobody re-reads. Action items get agreed verbally, live only in someone's
+memory or a chat message, and by the next meeting nobody can prove who owns what - or
+find the one sentence, three meetings ago, where a decision was actually made.
+
+**What MeetSaransh does:** upload a recording and it produces a transcript, a layered
+summary (TL;DR, decisions, action items, open questions, topic timeline), and adds the
+meeting to a searchable corpus. A chat interface answers questions **across every
+meeting on the account**, grounded in retrieved transcript excerpts with clickable
+citations - not a free-floating LLM guess.
+
+**Who it helps:** anyone who runs or attends recurring meetings and wants the output to
+be a queryable record instead of an audio file nobody replays - most directly, small
+teams without a dedicated notetaker or a paid meeting-intelligence subscription.
+
+**Engineering value:** the project is deliberately built as a full-stack, production-
+shaped system rather than a notebook demo - authentication and per-user data isolation,
+background job processing with crash recovery, a measured (not assumed) retrieval
+pipeline with a CI regression gate, observability, and a test suite that runs offline.
+Each of those is documented below with the reasoning behind it, not just the fact that
+it exists.
+
+**Elevator pitch:** MeetSaransh turns meeting audio into a structured, editable,
+searchable record - and every claim in this README about how well the search works is
+backed by a number from `evaluation/`, not an assertion.
+
+---
+
+## Key Highlights
+
+Only functionality that is implemented and tested is listed here.
+
+- Multi-user accounts with JWT auth and SQL-enforced per-user data isolation
+- Retrieval-augmented Q&A (hybrid dense + lexical search) across every stored meeting
+- Streamed answers over Server-Sent Events with citations arriving before the first token
+- Background job processing (thread pool + DB-backed status) with crash recovery
+- A measured, ablated retrieval pipeline with a labelled eval set and a CI regression gate
+- An insights dashboard built entirely from SQL aggregations (no analytics service)
+- Editable action items, tracked separately from the immutable model output
+- Structured JSON logging, Prometheus metrics, and a real container health check
+- Multi-stage, non-root Docker build with a CI pipeline that builds and smoke-tests it
+- 577 tests / 98% coverage, with every provider (Groq) call mocked - the suite runs offline
+
 ---
 
 ## Features
 
-- **Upload audio** (`.mp3 .wav .m4a .mp4 .webm .ogg .flac ...`) -> transcript + summary.
-- **Layered summary** - TL;DR -> key decisions -> action items -> open questions -> topic
-  timeline. Depth, not one flat paragraph.
-- **Editable action items** - each extracted with an owner (or `Unassigned`), a due
-  date (or `Not specified`), and a `[mm:ss]` timestamp; the prompt is told **not to
-  invent** them. Reassign, re-date, reword or tick them off inline, and the dashboard
-  follows. Rows a human has touched are marked `edited`, so "the model said Priya owns
-  this" stays distinguishable from "we decided Priya owns this".
-- **Ask your meetings (RAG)** - semantic + keyword search across every meeting, with the
-  question **rewritten into retrieval vocabulary** first, a **streamed** answer, and
-  **clickable citations** that jump to the exact transcript moment. Citations arrive
-  *before* the first token, so the sources are on screen while the answer is still being
-  written. Honest by design: it says *"I couldn't find anything about that"* when a topic
-  wasn't discussed, instead of guessing.
-- **Click-to-seek** everywhere - timestamps in the summary, transcript, and chat citations
-  all seek the audio / scroll the transcript.
-- **Transcript search** with match highlighting.
-- **Insights dashboard** - action items by owner (and how many actually have a due
-  date), meeting cadence over time, recurring topics, and the work nobody has picked up.
-  Every figure is a SQL aggregation, and each loose end links back to the meeting it
-  came from.
-- **Export** the summary as copy-ready Markdown.
-- **Runs with no API key** - a bundled sample meeting demonstrates the whole app offline;
-  RAG chat falls back to returning the most relevant excerpts.
+### Core Features
 
-### Operational features
+| Feature | Description |
+| --- | --- |
+| Audio upload | `.mp3 .wav .m4a .mp4 .webm .ogg .flac` and more -> transcript + summary |
+| Layered summary | TL;DR -> key decisions -> action items -> open questions -> topic timeline |
+| Editable action items | Owner, due date, `[mm:ss]` timestamp; reassignable and completable inline, with an `edited` flag distinguishing model output from human edits |
+| Ask your meetings (RAG) | Hybrid semantic + keyword search across every meeting, with query rewriting, streamed answers, and clickable timestamped citations |
+| Click-to-seek | Timestamps in the summary, transcript, and chat citations all seek the audio / scroll the transcript |
+| Transcript search | Client-side search with match highlighting |
+| Insights dashboard | Action items by owner, meeting cadence, recurring topics - all SQL aggregations |
+| Markdown export | Copy-ready export of a meeting's summary |
+| Offline demo mode | A bundled sample meeting runs the whole app with no API key |
 
-- **Accounts with per-user isolation** - JWT access + revocable refresh tokens, and
-  every meeting query filtered by owner in SQL.
-- **Background transcription** - uploads return in milliseconds and are processed by a
-  worker pool, with live status in the UI and recovery after a restart.
-- **A measured retrieval pipeline** - a labelled evaluation set, an ablation, and a
-  regression gate in CI, not just an assertion that the RAG is good.
-- **577 tests, 98% coverage**, every provider call mocked - the suite runs offline.
-- **CI on every push**: lint, format, types, tests + coverage gate, a retrieval-quality
-  regression gate, dependency audit, Docker build and a container smoke test.
-- **Containerized**: multi-stage build, non-root user, real health check.
-- **Rate limited** per client, with the tightest budget on the endpoints that spend money.
-- **Content-validated uploads** - magic bytes, not just the file extension.
-- **Structured JSON logs** with request-id correlation, and **Prometheus metrics**.
-- **Versioned schema migrations** - the database upgrades in place.
+### Advanced Features
+
+| Feature | Description |
+| --- | --- |
+| Hybrid retrieval | Dense (`fastembed` bge-small, cosine) + lexical (BM25) combined, tunable via `alpha` |
+| Query rewriting | An LLM rewrites the question into retrieval vocabulary before search; measured to roughly double paraphrase recall@1 (see [the RAG section](#ask-your-meetings---how-the-rag-works)) |
+| Two-layer grounding | A similarity gate plus an LLM prompt that may only answer from retrieved excerpts |
+| Optional reranking | A cross-encoder second stage exists, is tested, and ships **disabled** because the eval harness measured it hurting results on the current corpus size |
+| Retrieval evaluation harness | Ablation, alpha sweep, rerank A/B, rewrite A/B, and an LLM-as-judge faithfulness mode |
+
+### Engineering Features
+
+| Feature | Description |
+| --- | --- |
+| Auth & isolation | scrypt password hashing, JWT access + rotating refresh tokens, `user_id` filtering enforced in every storage query |
+| Background jobs | Thread pool worker, DB-backed status machine, interrupted jobs fail cleanly at startup instead of silently retrying |
+| Observability | JSON logs with request-id correlation, Prometheus metrics, route-template labels to bound cardinality |
+| Rate limiting | Per-account, per-endpoint sliding window, tightest on endpoints that call paid APIs |
+| Content-validated uploads | Magic-byte checks, streamed to disk with the size cap enforced as bytes arrive |
+| Schema migrations | Hand-rolled, versioned via `PRAGMA user_version` - the database upgrades in place |
+| CI pipeline | Lint, format, type-check, tests + coverage gate, retrieval regression gate, dependency audit, Docker build + smoke test |
+| Containerization | Multi-stage Docker build, non-root user, real health check |
+
+### Future Features
+
+See [Roadmap](#roadmap) and [Limitations](#limitations) for what is explicitly not yet built - Postgres + pgvector, Redis-backed rate limiting/queueing, long-audio chunking, and speaker diarization.
 
 ---
 
-## Quick start
+## Tech Stack
 
-**Prerequisites:** Python 3.12+ and a free [Groq API key](https://console.groq.com/keys)
-(no credit card). The app also runs **without** a key using the sample meeting.
+| Technology | Purpose | Why chosen | Alternatives considered | Tradeoff |
+| --- | --- | --- | --- | --- |
+| Python + FastAPI | API server | Async, typed, auto-generates OpenAPI docs | Flask, Django | FastAPI's dependency-injection model is what makes auth-as-a-dependency (see [Security](#security)) clean |
+| Vanilla JS/HTML/CSS | Frontend | ASR/LLM calls are just HTTP; a heavy SPA earns nothing here | React, Vue | No component reuse or state management library; fine at this UI scope |
+| SQLite (stdlib) | Meetings DB + vector store | Real relational DB, zero hosted service, no ORM needed | Postgres, MongoDB | Single-writer - not built for high concurrency (see [Scalability](#scalability)) |
+| `fastembed` (ONNX bge-small) | Dense embeddings | CPU-friendly, no `torch`, no extra API key, works offline | `sentence-transformers` (torch) | Smaller model than a full torch-backed embedder; the tradeoff is documented in [Design Decisions](#engineering-decisions) |
+| Pure-Python BM25 | Lexical retrieval half of hybrid search | No dependency, and it's the fallback when embeddings are unavailable | `rank_bm25`, Elasticsearch | Slower than a compiled/indexed implementation at large corpus sizes |
+| Groq (Whisper `large-v3-turbo`, `gpt-oss-120b`) | ASR + summarization/chat LLM | Free tier, fast inference, OpenAI-compatible API | OpenAI, local Whisper | Rate-limited free tier -> retry/backoff is load-bearing, not decorative |
+| PyJWT | Auth tokens | Verifying JWTs safely (alg confusion, expiry) is not the place to hand-roll code | `python-jose` | One extra dependency, deliberately kept where it buys real safety |
+| `hashlib.scrypt` (stdlib) | Password hashing | Vetted KDF, no extra dependency | `bcrypt`, `argon2-cffi` | Parameters are stored per-hash so cost can be raised later without a migration |
+| Prometheus client | Metrics | Pull-based, standard for container workloads | StatsD, custom counters | Requires a Prometheus instance to actually scrape it (see `docker-compose --profile observability`) |
+| Docker / Docker Compose | Packaging & local orchestration | Reproducible builds, matches the CI build target | - | Container runs a single worker process (see [Limitations](#limitations)) |
+| GitHub Actions | CI | Free for public repos, native to the repo host | CircleCI, Jenkins | - |
+| pytest, ruff, mypy | Testing, lint, types | Standard, fast, minimal config overhead | unittest, flake8+black, pyright | - |
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    Browser["Browser (vanilla HTML/JS, no build step)<br/>Meetings view + Ask (chat) view"]
+    MW["Middleware<br/>request id . access log . metrics . rate limit . security headers"]
+    API["FastAPI (app/main.py)<br/>routes, upload validation, Markdown export"]
+
+    Deps["app/deps.py<br/>get_current_user"]
+    Auth["app/auth.py<br/>scrypt passwords + JWT"]
+    Jobs["app/jobs.py<br/>worker pool: transcribe . summarize . index"]
+    Trans["app/transcription.py<br/>Groq Whisper"]
+    Summ["app/summarize.py<br/>structured JSON summary"]
+    Rag["app/rag.py<br/>chunk . hybrid retrieve . grounded answer"]
+    Emb["app/embeddings.py<br/>fastembed bge-small (lazy-loaded)"]
+    Llm["app/llm.py<br/>shared Groq chat client (retry/backoff)"]
+    Store["app/storage.py<br/>SQLite: meetings + chunks (migrated)"]
+
+    Groq[("Groq API<br/>Whisper + gpt-oss-120b")]
+
+    Browser -->|fetch| MW --> API
+    API --> Deps
+    API --> Auth
+    API --> Jobs
+    API --> Rag
+    Jobs --> Trans --> Groq
+    Jobs --> Summ --> Llm
+    Rag --> Emb
+    Rag --> Llm
+    Llm --> Groq
+    Auth --> Store
+    Jobs --> Store
+    Rag --> Store
+```
+
+There is no separate database service or message broker: SQLite and the in-process
+thread pool are the queue and the store, by design (see [Engineering Decisions](#engineering-decisions)).
+
+---
+
+## Request Lifecycle
+
+Upload-and-process is the flow worth diagramming, since it is asynchronous rather than
+a simple request/response round-trip:
+
+```mermaid
+sequenceDiagram
+    participant U as User (Browser)
+    participant API as FastAPI
+    participant W as Worker pool
+    participant P as Providers (Groq ASR/LLM)
+    participant DB as SQLite
+
+    U->>API: POST /meetings (audio file)
+    API->>API: validate content (magic bytes) + size
+    API->>DB: insert meeting, status=queued
+    API-->>U: 202 { id, status: "queued", poll_url }
+    API->>W: submit job
+
+    W->>P: transcribe (Whisper)
+    P-->>W: transcript + segment timestamps
+    W->>DB: status=processing (transcribing -> summarizing)
+    W->>P: summarize (LLM)
+    P-->>W: structured summary JSON
+    W->>W: chunk transcript + embed
+    W->>DB: store chunks + embeddings, status=done
+
+    U->>API: GET /meetings/{id} (poll)
+    API->>DB: read status
+    API-->>U: current stage / final result
+```
+
+A question against "Ask your meetings" follows a shorter, synchronous path: rewrite ->
+hybrid retrieve -> refusal gate -> grounded LLM answer -> (optionally streamed) response
+with citations. See [the RAG section](#ask-your-meetings---how-the-rag-works) for detail.
+
+---
+
+## Folder Structure
+
+```
+app/
+  main.py          # routes + pipelines + lifespan
+  auth.py          # password hashing (scrypt) + JWT issue/verify
+  deps.py          # get_current_user, require_admin
+  jobs.py          # background transcription pool + crash recovery
+  analytics.py     # cross-meeting SQL aggregations for the dashboard
+  reranker.py      # optional cross-encoder second stage (ships disabled - see below)
+  config.py        # env-driven settings + startup validation
+  schemas.py       # Pydantic request/response models (the API contract)
+  errors.py        # one error envelope + centralized handlers
+  middleware.py    # request ids, access logs, metrics, rate limit, headers
+  security.py      # magic-byte validation, rate limiter, security headers
+  observability.py # JSON logging + Prometheus metrics
+  transcription.py # ASR + timestamp formatting
+  summarize.py     # summary + defensive JSON parsing
+  rag.py           # chunking, BM25, hybrid retrieval, grounded answer
+  prompts.py       # graded prompt artifacts (summary + RAG)
+  storage.py       # SQLite (meetings + chunks) + versioned migrations
+  llm.py           # shared chat client + retry/backoff
+  embeddings.py    # local dense embeddings (fastembed)
+static/            # index.html, style.css, app.js  (no framework)
+tests/             # 577 tests, providers mocked, no network
+evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
+ops/               # Prometheus scrape config
+data/sample/       # bundled sample meeting (offline demo)
+```
+
+**Separation of concerns:** `app/main.py` only wires routes to functions; the actual
+logic for auth, retrieval, summarization, and storage each live in their own module with
+a single responsibility. `deps.py` is what makes an endpoint's auth requirement visible
+in its function signature rather than buried in middleware (see [Security](#security)
+for why that specific choice matters). `evaluation/` is kept outside `app/` and `tests/`
+because it measures the product rather than verifying its correctness - it produces
+numbers, not pass/fail assertions.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.12+
+- A free [Groq API key](https://console.groq.com/keys) (no credit card) - optional, the
+  app also runs **without** a key using the bundled sample meeting
+- Docker + Docker Compose - optional, only needed for the containerized path
+
+### Clone
+
+```bash
+git clone https://github.com/R1tulD3v/MeetSaransh.git
+cd MeetSaransh
+```
+
+### Install
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate            # Windows   (source .venv/bin/activate on macOS/Linux)
 pip install -r requirements.txt
+```
 
+### Environment variables
+
+```bash
 copy .env.example .env            # optional - paste your GROQ_API_KEY (cp on macOS/Linux)
+```
 
+See [Environment Variables](#environment-variables) below for the full list.
+
+### Run locally
+
+```bash
 python run.py
 ```
 
-Open **http://127.0.0.1:8000**, **create an account** (it is local and takes a
-second), then **Load sample meeting** -> try the **Ask your meetings** tab. On first RAG
-use, a ~90 MB embedding model downloads once and is cached.
+Open **http://127.0.0.1:8000**, **create an account** (it's local and takes a second),
+then **Load sample meeting** -> try the **Ask your meetings** tab. On first RAG use, a
+~90 MB embedding model downloads once and is cached.
 
-If you are upgrading a database that predates accounts, the **first** account you create
-claims the meetings already in it, so nothing is stranded.
-
-`JWT_SECRET` is optional in development (one is generated per process, so restarting
-signs you out) and **required in production** - the app refuses to start without it.
+If you are upgrading a database that predates accounts, the **first** account you
+create claims the meetings already in it, so nothing is stranded.
 
 Interactive API docs (development only): **http://127.0.0.1:8000/docs**
 
-### With Docker
+### With Docker (production-shaped build)
 
 ```bash
 export JWT_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
@@ -101,28 +347,77 @@ Add the metrics stack (Prometheus scraping `/metrics` at http://localhost:9090):
 docker compose --profile observability up --build
 ```
 
+There is no separate "production build" step for the frontend - `static/` is served
+as-is, which is a direct consequence of the no-build-step design decision.
+
 ---
 
-## Development
+## Environment Variables
 
-```bash
-pip install -r requirements-dev.txt
-pre-commit install          # run the same checks CI runs, before each commit
-```
+Every setting is an environment variable with a working default, so an empty `.env` is
+a valid configuration. Full annotated list: [`.env.example`](.env.example).
+`app/config.py` validates on startup and refuses to boot on a combination that cannot
+work (e.g. `CHUNK_OVERLAP_WORDS >= CHUNK_TARGET_WORDS`); merely-degraded states such as
+a missing API key are logged as warnings and the app starts anyway.
 
-| Task | Command |
-| --- | --- |
-| Run the tests | `pytest` |
-| Tests without the coverage gate | `pytest --no-cov` |
-| Lint | `ruff check .` |
-| Format | `ruff format .` |
-| Type-check | `mypy` |
-| Audit dependencies | `pip-audit -r requirements.txt --strict` |
-| Score retrieval quality | `python -m evaluation.run` |
+| Variable | Purpose | Required | Example |
+| --- | --- | --- | --- |
+| `GROQ_API_KEY` | Provider key for ASR + LLM calls | No - app runs offline via the sample meeting without it | `gsk_...` |
+| `JWT_SECRET` | Signs access/refresh tokens | **Yes, in production** (dev generates one per process) | output of `secrets.token_urlsafe(48)` |
+| `ENVIRONMENT` | `development` enables `/docs`, relaxes HSTS; `production` tightens both | No (default `development`) | `production` |
+| `ASR_MODEL` / `LLM_MODEL` / `EMBED_MODEL` | Model overrides | No | `whisper-large-v3-turbo` |
+| `GROQ_BASE_URL` | Point at another OpenAI-compatible provider | No | `https://api.groq.com/openai/v1` |
+| `ACCESS_TOKEN_MINUTES` / `REFRESH_TOKEN_DAYS` | Token lifetimes | No (defaults `30` / `7`) | `30` |
+| `JOB_WORKERS` | Background transcription thread pool size | No (default `2`) | `2` |
+| `MAX_ACTIVE_JOBS_PER_USER` | Per-user queue ceiling | No (default `3`) | `3` |
+| `LOG_LEVEL` / `LOG_JSON` | Logging verbosity / format | No | `INFO` |
+| `METRICS_ENABLED` | Expose `/metrics` | No (default `true`) | `true` |
+| `RATE_LIMIT_ENABLED` | Toggle rate limiting | No (default `true`) | `true` |
+| `RATE_LIMIT_WINDOW_SECONDS` | Sliding window size | No (default `60`) | `60` |
+| `RATE_LIMIT_UPLOAD` / `RATE_LIMIT_CHAT` / `RATE_LIMIT_DEFAULT` / `RATE_LIMIT_AUTH` | Per-endpoint request caps | No | `5` / `20` / `120` / `10` |
+| `TRUST_PROXY_HEADERS` | Honor `X-Forwarded-For` for rate-limit identity | No (default `false`) - only enable behind a proxy you control | `false` |
+| `CORS_ORIGINS` | Comma-separated allowlist; empty = same-origin only | No | `https://example.com` |
+| `DATA_DIR` | Where SQLite DB + audio live | No (default `./data`, container uses `/data`) | `./data` |
+| `MAX_UPLOAD_BYTES` | Upload size cap | No (default `26214400`, i.e. 25 MB) | `26214400` |
+| `CHUNK_TARGET_WORDS` / `CHUNK_OVERLAP_WORDS` | Retrieval chunking | No (defaults `130` / `30`) | `130` |
+| `RAG_TOP_K` | Excerpts fed to the LLM per question | No (default `6`) | `6` |
+| `RAG_MIN_SCORE` | Refusal-gate similarity threshold | No (default `0.50`) | `0.50` |
+| `QUERY_REWRITE_ENABLED` / `QUERY_REWRITE_MAX_CHARS` | LLM query rewriting toggle + guard | No (default `true` / `400`) | `true` |
+| `RERANK_ENABLED` / `RERANK_MODEL` / `RERANK_CANDIDATES` | Optional cross-encoder stage | No (default `false`) | `false` |
+| `HTTP_TIMEOUT_SECONDS` | Outbound provider call timeout | No (default `300`) | `300` |
 
-The suite needs **no API key and no network**: Groq calls are mocked with `respx`, and
-the embedding model is forced unavailable so no test downloads it. Tests that need the
-dense retrieval path use deterministic stand-in vectors instead.
+No secret values are checked into the repository; `.env` is git-ignored and
+[`.env.example`](.env.example) carries no real credentials.
+
+---
+
+## Usage
+
+**First launch:** start the server, open the app, and create a local account -
+registration and login are both on the same page and require no external identity
+provider.
+
+**Typical workflow without a provider key:** click **Load sample meeting** to see the
+full pipeline output (transcript, layered summary, action items) using the bundled
+sample, then open **Ask your meetings** and ask a question about it - RAG chat falls
+back to returning the most relevant excerpts when no LLM key is configured.
+
+**Typical workflow with a provider key:** upload a real recording, watch its status move
+from `queued` -> `processing` -> `done` in the UI, then edit the extracted action items
+(reassign an owner, set a real due date, tick one off), export the summary as Markdown,
+and check the **Insights** tab to see it reflected in the cross-meeting aggregates.
+
+**Major user flows:** account creation -> upload/transcribe/summarize -> review and edit
+action items -> ask questions across meetings with citations -> view aggregate insights.
+
+---
+
+## Screenshots
+
+No screenshots or a recorded walkthrough are currently checked into this repository.
+Recommended before treating this README as "recruiter-final": a short GIF of the upload
+-> summary -> chat-with-citations flow, and a static shot of the insights dashboard.
+Tracked as a documentation gap, not a product gap - see [Future Improvements](#roadmap).
 
 ---
 
@@ -340,9 +635,10 @@ another's task.
 Every number is a SQL aggregation. Workload and completion read the normalised
 `action_items` table, so the charts follow what the team decided rather than only what
 the model first extracted; topics and counts use SQLite's JSON1 to walk into
-`summary_json` rather than loading every meeting into Python and counting in a loop. That is not only tidier: the loop costs one full transcript read per
-meeting, so it degrades exactly as a user accumulates the meetings that make the
-dashboard worth looking at.
+`summary_json` rather than loading every meeting into Python and counting in a loop.
+That is not only tidier: the loop costs one full transcript read per meeting, so it
+degrades exactly as a user accumulates the meetings that make the dashboard worth
+looking at.
 
 Three choices worth explaining:
 
@@ -360,120 +656,23 @@ and is not presented as such.
 
 ---
 
-## Architecture
+## Engineering Decisions
 
-```
-Browser (vanilla HTML/JS, no build step) -- Meetings view + Ask (chat) view
-        |  fetch()
-        v
-Middleware -- request id . access log . metrics . rate limit . security headers
-        |
-        v
-FastAPI (app/main.py) -- routes, upload validation, Markdown export
-        |
-        +-- app/deps.py           -> get_current_user (auth as a dependency)
-        +-- app/auth.py           -> scrypt passwords + JWT access/refresh tokens
-        +-- app/jobs.py           -> worker pool: transcribe . summarize . index
-        +-- app/transcription.py  -> Groq Whisper  (ASR, segment timestamps)
-        +-- app/summarize.py      -> structured JSON summary
-        +-- app/rag.py            -> chunk . hybrid retrieve . grounded answer
-        +-- app/embeddings.py     -> fastembed bge-small (ONNX, lazy-loaded)
-        +-- app/llm.py            -> shared Groq chat client (retry/backoff)
-        +-- app/prompts.py        -> prompt engineering (summary + RAG)
-        +-- app/storage.py        -> SQLite: meetings + chunks (stdlib, migrated)
-```
-
-```
-app/
-  main.py          # routes + pipelines + lifespan
-  auth.py          # password hashing (scrypt) + JWT issue/verify
-  deps.py          # get_current_user, require_admin
-  jobs.py          # background transcription pool + crash recovery
-  analytics.py     # cross-meeting SQL aggregations for the dashboard
-  reranker.py      # optional cross-encoder second stage (ships disabled - see below)
-  config.py        # env-driven settings + startup validation
-  schemas.py       # Pydantic request/response models (the API contract)
-  errors.py        # one error envelope + centralized handlers
-  middleware.py    # request ids, access logs, metrics, rate limit, headers
-  security.py      # magic-byte validation, rate limiter, security headers
-  observability.py # JSON logging + Prometheus metrics
-  transcription.py # ASR + timestamp formatting
-  summarize.py     # summary + defensive JSON parsing
-  rag.py           # chunking, BM25, hybrid retrieval, grounded answer
-  prompts.py       # graded prompt artifacts (summary + RAG)
-  storage.py       # SQLite (meetings + chunks) + versioned migrations
-  llm.py           # shared chat client + retry/backoff
-  embeddings.py    # local dense embeddings (fastembed)
-static/            # index.html, style.css, app.js  (no framework)
-tests/             # 577 tests, providers mocked, no network
-evaluation/        # labelled Q/A set + retrieval metrics + the ablation runner
-ops/               # Prometheus scrape config
-data/sample/       # bundled sample meeting (offline demo)
-```
-
-### API
-
-All routes are versioned under `/api/v1`. The unversioned `/api` prefix still works as a
-compatibility alias but is not documented in the OpenAPI schema.
-
-Every route below except `/health` and `/metrics` requires
-`Authorization: Bearer <access token>` and only ever returns the caller's own data.
-
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `GET`  | `/api/v1/health` | status, models, and a real database round-trip (public) |
-| `POST` | `/api/v1/auth/register` | create an account, returns a token pair |
-| `POST` | `/api/v1/auth/login` | exchange credentials for a token pair |
-| `POST` | `/api/v1/auth/refresh` | rotate a refresh token for a fresh pair |
-| `POST` | `/api/v1/auth/logout` | revoke every refresh token for the caller |
-| `GET`  | `/api/v1/auth/me` | the current account |
-| `POST` | `/api/v1/meetings` | upload audio -> **202**, queued for background processing |
-| `POST` | `/api/v1/meetings/sample` | create the bundled sample (no key needed) |
-| `GET`  | `/api/v1/meetings/{id}/action-items` | the editable action items |
-| `PATCH` | `/api/v1/action-items/{id}` | reassign, re-date, reword, or complete one |
-| `GET`  | `/api/v1/meetings` | paginated list (`?limit=&offset=`) |
-| `GET`  | `/api/v1/meetings/{id}` | full meeting; also the **status polling** endpoint |
-| `GET`  | `/api/v1/meetings/{id}/audio` , `/export` | stream audio , Markdown export |
-| `DELETE` | `/api/v1/meetings/{id}` | delete meeting + audio + chunks |
-| `POST` | `/api/v1/chat` | grounded Q&A (optional `meeting_id` scope) |
-| `POST` | `/api/v1/chat/stream` | the same answer as a Server-Sent Events stream |
-| `GET`  | `/api/v1/analytics` | cross-meeting aggregates (`?days=` window) |
-| `POST` | `/api/v1/reindex` | index any meetings not yet in the vector store |
-| `GET`  | `/api/v1/rag/status` | embeddings availability, indexed meeting/chunk counts |
-| `GET`  | `/metrics` | Prometheus exposition (unversioned, by convention) |
-
-Every failure returns the same envelope, so clients branch on a code rather than parsing
-prose:
-
-```json
-{"error": {"code": "unsupported_content", "message": "...", "request_id": "4990113eef34"}}
-```
-
-The `request_id` is also returned as the `X-Request-ID` header and appears on every
-server log line for that request.
-
----
-
-## Authentication and data isolation
-
-- **Passwords** are hashed with stdlib `hashlib.scrypt` (n=2^15, r=8 - about 32 MB per
-  hash). The stored string carries its own parameters, so the cost can be raised later
-  and existing hashes are transparently upgraded on the owner's next login.
-- **Tokens** are JWTs via PyJWT. A 30-minute access token, and a 7-day refresh token
-  whose id is stored hashed so it can be revoked. Refresh **rotates**: a refresh token
-  is spendable once, so a stolen one stops working as soon as the real user refreshes.
-- **Authentication is a dependency, not middleware.** Middleware would need a list of
-  public paths kept in sync with the routes by hand, and the failure mode of that
-  drifting is an endpoint that is quietly unauthenticated. As a dependency, a route is
-  protected exactly when its signature says so - visible in review and in `/docs`.
-- **Isolation is enforced in SQL.** Every storage function takes `user_id` and filters
-  on it in the query, so forgetting it is a `TypeError` at import time rather than a
-  data leak in production. That includes `get_chunks`, which retrieval reads from
-  directly: a missing filter there would not look wrong, it would just start answering
-  one user's questions from another user's meetings, complete with citations.
-- Someone else's meeting id returns **404, not 403** - a 403 confirms the id exists and
-  turns the API into an enumeration oracle. Login failures are likewise indistinguishable
-  between "no such account" and "wrong password".
+| Decision | Why chosen | Alternatives | Tradeoff |
+| --- | --- | --- | --- |
+| Python + FastAPI + vanilla JS, no frontend framework | ASR/LLM are just HTTP calls, so a heavy SPA earns nothing; lets the CSP be genuinely strict (no inline script/style to whitelist) | React/Vue + build pipeline | No component reuse; fine at this UI scope, would not scale to a larger app |
+| SQLite via the standard library, for both meetings and the vector store | Real relational DB, no hosted service, no ORM | Postgres, MongoDB, a managed vector DB | Single-writer, not built for high concurrency - see [Scalability](#scalability) |
+| Hand-rolled migrations on `PRAGMA user_version` | Alembic earns its weight alongside SQLAlchemy; there is no ORM here | Alembic | More manual migration authoring, but schema changes no longer mean deleting the database |
+| `fastembed` (ONNX) over `sentence-transformers` (torch) | CPU-friendly, no heavy `torch` dependency, no extra API key (Groq has no embeddings endpoint), works offline | `sentence-transformers`, OpenAI embeddings | Smaller model footprint than a full torch-backed embedder |
+| Hybrid retrieval, not pure-vector | Better recall on conversational text; degrades to lexical-only if embeddings are unavailable | Pure dense retrieval | Slightly more code and a tunable weight (`alpha`) to maintain |
+| LLM as the real grounding layer, not just the similarity gate | The similarity gate can't reliably separate "loosely related" from "off-topic" (bge-small compresses those into one score band) | Similarity-only refusal | Refusal quality now depends on an API key being configured |
+| Shared `llm.py` with retry-and-backoff on 429 | The free-tier rate limits make this a real requirement, not decoration | Per-caller retry logic | A 401 is deliberately *not* retried - the key will not fix itself |
+| In-process rate limiter, sliding window | A fixed window would let a client send 2x the limit across a boundary, which on an endpoint that triggers paid transcription is a money bug | Fixed window, Redis-backed limiter | Limits are per-process, not shared across workers - see [Limitations](#limitations) |
+| Stdlib `logging` with a JSON formatter | The only thing a logging framework would add here is a dependency | `structlog`, `loguru` | - |
+| `scrypt` (stdlib) for passwords, PyJWT for tokens | Calling a vetted KDF correctly is parameter selection; verifying a JWT safely is not (`alg: none`, algorithm confusion, expiry) | `bcrypt`/`argon2` + hand-rolled JWT | One added dependency, drawn where it actually buys safety |
+| Rate limits follow the account, not the IP | An office behind one NAT shares an address, so IP-keyed limits punish colleagues for each other's usage | IP-keyed limiting | The bearer token is *verified* in the limiter, not trusted, so an unverified `sub` can't be used to choose a bucket |
+| Background processing with status polling, not a synchronous request or a broker | See [Background processing](#background-processing) | Synchronous request, Celery/RQ | Client must poll; no push notification |
+| No ffmpeg / no audio chunking in v1 | Avoids a heavy dependency or a system binary | Bundle ffmpeg, chunk long files | Hard 25 MB cap (the provider's own limit) instead |
 
 ---
 
@@ -508,79 +707,31 @@ The client polls `GET /meetings/{id}` and the UI shows the current stage. Design
 
 ---
 
-## Configuration
+## Performance Considerations
 
-Every setting is an environment variable with a working default, so an empty `.env` is a
-valid configuration. See [`.env.example`](.env.example) for the full annotated list.
-`app/config.py` validates on startup and refuses to boot on a combination that cannot
-work (for example `CHUNK_OVERLAP_WORDS >= CHUNK_TARGET_WORDS`, which would make the
-chunker unable to advance), while merely-degraded states such as a missing API key are
-logged as warnings and the app starts anyway.
+**Implemented, and measured:**
 
----
+- Streaming citations arrive at **0.11s**, first token at **1.28s**, against live Groq
+  with query rewriting off (see [Streaming](#streaming) above for the full breakdown and
+  the ~1.6s cost of rewriting).
+- Background transcription means an upload returns in milliseconds regardless of
+  recording length, instead of holding the HTTP connection open for the duration of the
+  ASR call.
+- The insights dashboard is built entirely from SQL `GROUP BY` queries and SQLite's
+  JSON1 functions rather than loading every meeting into Python, so it does not degrade
+  linearly with meeting count the way a per-meeting Python loop would.
+- Embeddings are lazy-loaded: the ~90 MB model only downloads on first RAG use, not at
+  process startup.
 
-## Observability
+**Known bottleneck, documented rather than hidden:** retrieval is brute-force cosine
+similarity over `float32` blobs in SQLite. That is correct and fast at the corpus sizes
+this project has been measured on; an ANN index (HNSW/IVFFlat via pgvector) is the
+identified scaling path once a corpus grows large enough to need it - see
+[Roadmap](#roadmap).
 
-- **Logs**: one JSON object per line in production (`LOG_JSON=true`), human-readable
-  lines in development. Every line carries the request id, and the access log records
-  method, route template, status, and duration.
-- **Metrics** at `/metrics`: request counts and a latency histogram (bucketed up to 300s,
-  because a transcription is not a 10ms request), rate-limit rejections, rejected uploads
-  by reason, provider call outcomes and latency by provider, RAG answer modes, and gauges
-  for stored meetings and indexed chunks.
-- Metric labels use the **route template** (`/api/v1/meetings/{meeting_id}`), never the
-  raw path, so meeting ids cannot explode the time-series cardinality.
-
-Useful queries once Prometheus is running:
-
-```promql
-histogram_quantile(0.95, sum(rate(meetsaransh_http_request_duration_seconds_bucket[5m])) by (le, route))
-sum(rate(meetsaransh_provider_calls_total[5m])) by (provider, outcome)
-sum(rate(meetsaransh_rate_limited_total[5m])) by (route)
-```
-
----
-
-## Design decisions (and the trade-offs)
-
-- **Python + FastAPI + vanilla JS, no frontend framework** - ASR/LLM are just HTTP calls,
-  so a heavy SPA earns nothing. Zero `node_modules`, no build step. It also lets the CSP
-  be genuinely strict, since there is no inline script or style to whitelist.
-- **SQLite via the standard library** for both meetings and the vector store - a real
-  relational DB, no hosted service, no ORM. Trade-off: single-writer, not built for high
-  concurrency - fine for this scope.
-- **Hand-rolled migrations on `PRAGMA user_version`** rather than Alembic - Alembic earns
-  its weight alongside SQLAlchemy, and there is no ORM here. The mechanism is the point:
-  schema changes no longer mean deleting the database.
-- **`fastembed` (ONNX) over `sentence-transformers` (torch)** for embeddings -
-  CPU-friendly, no heavy `torch` dependency, no extra API key (Groq has no embeddings
-  endpoint), works offline. The model downloads once and caches.
-- **Hybrid retrieval, not pure-vector** - better recall on conversational text, and it
-  degrades to lexical-only if embeddings are unavailable.
-- **LLM as the real grounding layer** - the similarity gate can't separate "loosely
-  related" from "off-topic" reliably (bge-small compresses those into one score band), so
-  the prompt does the honest refusing. Documented rather than pretended-away.
-- **Shared `llm.py` with retry-and-backoff on 429** - the free-tier rate limits make this
-  a real requirement, not decoration. A 401 is deliberately *not* retried: the key will
-  not fix itself.
-- **In-process rate limiter, sliding window** - a fixed window would let a client send 2x
-  the limit across a boundary, which on an endpoint that triggers a paid transcription is
-  a money bug. In-process because the app runs as one process today; the interface is
-  what matters, and swapping the deques for a Redis sorted set is a drop-in change.
-- **Stdlib `logging` with a JSON formatter, not structlog** - the only thing a logging
-  framework would add here is a dependency.
-- **scrypt from the standard library for passwords, but PyJWT for tokens.** Calling a
-  vetted KDF correctly is a matter of choosing parameters; verifying a JWT safely is
-  not (`alg: none`, algorithm confusion, expiry handling), and auth is the last place
-  to save a dependency. One added dependency, drawn where it actually buys safety.
-- **Rate limits follow the account, not the IP.** An office behind one NAT shares an
-  address, so IP-keyed limits punish colleagues for each other's usage. The bearer
-  token is *verified* in the limiter rather than trusted, because an unverified `sub`
-  would let anyone choose their own bucket.
-- **Background processing with status polling**, not a synchronous request or a broker
-  - see the section above for the reasoning and the trade-offs.
-- **No ffmpeg / no audio chunking in v1** - both mean a heavy dependency or a system
-  binary; files are validated and capped at 25 MB (the provider's limit) instead.
+**Future improvements (not implemented):** an ANN index for retrieval at scale, a shared
+cache for repeated questions, and moving the rate limiter/job queue to Redis so they
+survive a restart and work across multiple worker processes.
 
 ---
 
@@ -623,25 +774,270 @@ sum(rate(meetsaransh_rate_limited_total[5m])) by (route)
 - `pip-audit` runs in CI and Dependabot opens upgrade PRs that must pass the pipeline.
 - Interactive docs and the OpenAPI schema are disabled when `ENVIRONMENT=production`.
 
+**Recommendations, not implemented:** a password-reset/email-verification flow, and
+promoting `require_admin` (already implemented and tested) to actually gate an
+admin-only endpoint. See [Limitations](#limitations).
+
 ---
 
-## Roadmap
+## Scalability
 
-Next up, in order:
+**Current limitations:**
 
-1. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
-   plus Redis so the rate limiter and job queue are shared across processes. Needs
-   Docker or a hosted Postgres to develop against - it is not written blind.
-2. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap (needs
-   ffmpeg).
-3. **Speaker diarization** - label "Speaker 1 -> Priya". Deliberately last: the usable
-   options need torch, which would undo the small-footprint story the rest of the
-   project is built on.
+- SQLite is single-writer. Fine at the current scope, but it is the ceiling on write
+  concurrency.
+- The job queue and rate limiter hold **per-process** state - they do not survive a
+  restart and are not shared between workers, which is why the container runs a single
+  worker process.
+- Retrieval is brute-force cosine similarity in numpy - correct and fast at the measured
+  corpus sizes, not indexed for large-scale search.
+- Uploaded audio lives on the container's local volume, not object storage.
 
-Done: [x] auth + per-user isolation &nbsp; [x] background transcription with polling
-&nbsp; [x] measured retrieval with a CI regression gate &nbsp; [x] insights dashboard
-&nbsp; [x] streamed answers &nbsp; [x] reranking (measured, shipped off)
-&nbsp; [x] query rewriting (measured, shipped on) &nbsp; [x] editable action items.
+**Potential bottlenecks as usage grows:** concurrent writes to SQLite under multi-user
+load; retrieval latency as the number of stored chunks grows past what brute-force
+cosine can serve quickly; a single-process rate limiter and job queue becoming a
+coordination problem across multiple app instances.
+
+**Scaling approach (see [Roadmap](#roadmap) for sequencing):** Postgres + pgvector with
+an ANN index replaces SQLite once brute-force cosine stops being fast enough; Redis
+gives the rate limiter and job queue shared, restart-durable state so the app can run
+more than one worker/process; object storage replaces the local audio volume once the
+container needs to be horizontally scaled.
+
+---
+
+## Testing
+
+**Current testing:** 577 tests at 98% coverage (enforced by a 90% CI gate). Every
+provider call (Groq ASR/LLM) is mocked with `respx`, and the embedding model is forced
+unavailable in tests so nothing downloads it - the suite needs **no API key and no
+network**. Tests that exercise the dense retrieval path use deterministic stand-in
+vectors instead of the real model.
+
+| Task | Command |
+| --- | --- |
+| Run the tests | `pytest` |
+| Tests without the coverage gate | `pytest --no-cov` |
+| Lint | `ruff check .` |
+| Format | `ruff format .` |
+| Type-check | `mypy` |
+| Audit dependencies | `pip-audit -r requirements.txt --strict` |
+| Score retrieval quality | `python -m evaluation.run` |
+
+CI runs all of the above on every push, plus a Docker build and a container smoke test.
+
+**Missing / recommended improvements:** no browser-driven end-to-end tests of the
+frontend, and no load/concurrency testing of the SQLite write path or the rate limiter
+under sustained traffic - both reasonable next steps before treating this as
+production-hardened at scale.
+
+---
+
+## API Documentation
+
+All routes are versioned under `/api/v1`. The unversioned `/api` prefix still works as a
+compatibility alias but is not documented in the OpenAPI schema.
+
+Every route below except `/health` and `/metrics` requires
+`Authorization: Bearer <access token>` and only ever returns the caller's own data.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET`  | `/api/v1/health` | status, models, and a real database round-trip (public) |
+| `POST` | `/api/v1/auth/register` | create an account, returns a token pair |
+| `POST` | `/api/v1/auth/login` | exchange credentials for a token pair |
+| `POST` | `/api/v1/auth/refresh` | rotate a refresh token for a fresh pair |
+| `POST` | `/api/v1/auth/logout` | revoke every refresh token for the caller |
+| `GET`  | `/api/v1/auth/me` | the current account |
+| `POST` | `/api/v1/meetings` | upload audio -> **202**, queued for background processing |
+| `POST` | `/api/v1/meetings/sample` | create the bundled sample (no key needed) |
+| `GET`  | `/api/v1/meetings/{id}/action-items` | the editable action items |
+| `PATCH` | `/api/v1/action-items/{id}` | reassign, re-date, reword, or complete one |
+| `GET`  | `/api/v1/meetings` | paginated list (`?limit=&offset=`) |
+| `GET`  | `/api/v1/meetings/{id}` | full meeting; also the **status polling** endpoint |
+| `GET`  | `/api/v1/meetings/{id}/audio` , `/export` | stream audio , Markdown export |
+| `DELETE` | `/api/v1/meetings/{id}` | delete meeting + audio + chunks |
+| `POST` | `/api/v1/chat` | grounded Q&A (optional `meeting_id` scope) |
+| `POST` | `/api/v1/chat/stream` | the same answer as a Server-Sent Events stream |
+| `GET`  | `/api/v1/analytics` | cross-meeting aggregates (`?days=` window) |
+| `POST` | `/api/v1/reindex` | index any meetings not yet in the vector store |
+| `GET`  | `/api/v1/rag/status` | embeddings availability, indexed meeting/chunk counts |
+| `GET`  | `/metrics` | Prometheus exposition (unversioned, by convention) |
+
+**Authentication:** `Authorization: Bearer <access token>` (JWT, 30-minute default
+lifetime). Obtain a token pair from `/auth/login` or `/auth/register`; refresh with
+`/auth/refresh`, which rotates the refresh token.
+
+**Errors:** every failure returns the same envelope, so clients branch on a code rather
+than parsing prose:
+
+```json
+{"error": {"code": "unsupported_content", "message": "...", "request_id": "4990113eef34"}}
+```
+
+The `request_id` is also returned as the `X-Request-ID` header and appears on every
+server log line for that request.
+
+Full interactive documentation (request/response schemas, try-it-out) is generated by
+FastAPI and served at `/docs` in development.
+
+---
+
+## Database Design
+
+SQLite, with the schema applied through versioned migrations in `app/storage.py`
+(currently 6 migrations, tracked via `PRAGMA user_version`).
+
+```mermaid
+erDiagram
+    users ||--o{ meetings : owns
+    users ||--o{ refresh_tokens : has
+    meetings ||--o{ chunks : "chunked into"
+    meetings ||--o{ action_items : "extracts"
+
+    users {
+        text id PK
+        text email
+        text password_hash
+        text role
+        text created_at
+    }
+    meetings {
+        text id PK
+        text user_id FK
+        text title
+        text filename
+        text created_at
+        real duration
+        text transcript
+        text segments_json
+        text summary_json
+        text audio_ext
+    }
+    chunks {
+        text id PK
+        text meeting_id FK
+        int ord
+        real start
+        real end
+        text text
+        text segs_json
+        blob embedding
+    }
+    action_items {
+        text id PK
+        text meeting_id FK
+        int ord
+        text task
+        text owner
+        text due
+        text timestamp
+        text status
+        int edited
+        text updated_at
+    }
+    refresh_tokens {
+        text jti_hash PK
+        text user_id FK
+        text issued_at
+        text expires_at
+        int revoked
+    }
+```
+
+Notes that don't fit the diagram:
+
+- `meetings.user_id` is nullable at the schema level (added by a later migration to an
+  existing table) but every read/write path in `app/storage.py` requires and filters on
+  it - see [Security](#security).
+- `chunks.embedding` stores a raw `float32` vector as a `BLOB`; there is no vector index,
+  retrieval scans and scores in numpy (see [Performance Considerations](#performance-considerations)).
+- `action_items` is deliberately not a foreign key into `summary_json` - it is backfilled
+  from it once, then diverges as a human edits it (see [Action items as state, not text](#action-items-as-state-not-text)).
+- `refresh_tokens.jti_hash` stores a hash of the token id, not the token itself, so a
+  database read alone cannot be used to forge a session.
+- All foreign keys carry `ON DELETE CASCADE` and `PRAGMA foreign_keys=ON` is set, so
+  deleting a user or a meeting cannot leave orphaned chunks or action items.
+
+---
+
+## Deployment
+
+**Hosting:** no hosted deployment is currently running; the documented paths are local
+(`python run.py`) and containerized (`docker compose up --build`) - see
+[Getting Started](#getting-started).
+
+**Environment:** `ENVIRONMENT=production` tightens security headers (HSTS on),
+disables `/docs` and the OpenAPI schema, and requires `JWT_SECRET` and a non-wildcard
+`CORS_ORIGINS` to be set - the app refuses to start otherwise.
+
+**Build process:** the Dockerfile is a multi-stage build running as a non-root user,
+with a real health check (`/health`, including a database round-trip, not just "process
+is alive").
+
+**Deployment flow:** `docker compose up --build` builds the image and starts the
+container; the optional `--profile observability` adds a Prometheus instance scraping
+`/metrics`. CI (`ci.yml`) builds the same image and runs a container smoke test on every
+push, so a broken container build fails before it would ever reach a deploy step - there
+is currently no automated deploy step itself (i.e. no CD to a live environment).
+
+---
+
+## Challenges Faced
+
+**Problem: a synchronous upload endpoint held connections open and destroyed already-paid-for work on timeout.**
+Attempt: none discarded here - the fix (background jobs, DB-backed status, client
+polling) was the first design, documented in [Background processing](#background-processing).
+Lesson: for a request that wraps an expensive external call, "does it return quickly"
+and "is the work safe to lose" are two separate questions, and the second one is what
+actually shaped the design (interrupted jobs fail rather than silently re-spend budget).
+
+**Problem: a naive check-then-write on action item edits would race.**
+Attempt: an initial approach of "read the row, check ownership, then update" was
+rejected before shipping, because two concurrent PATCH requests could both pass the
+check before either writes. Final solution: the ownership check lives inside the
+`UPDATE ... WHERE user_id = ?` clause itself, so the database - not application code -
+resolves the race atomically.
+Lesson: "check, then act" is a race whenever the check and the act aren't the same
+database operation; push the check into the write when the database can enforce it for you.
+
+**Problem: a rewriter designed to improve retrieval could quietly break the refusal gate.**
+Attempt: an early version considered running the refusal check against the rewritten
+query, since that's what retrieval sees. Final solution: the refusal gate always reads
+the **original** question - a test deliberately feeds a hostile rewriter and asserts the
+refusal still holds.
+Lesson: when a component is added to help ranking, it's worth explicitly asking whether
+downstream safety logic silently started trusting its output too.
+
+**Problem: "add a cross-encoder reranker" is not automatically an improvement.**
+Attempt: reranking was built on the reasonable assumption that scoring query+chunk
+jointly beats independent embeddings. Final solution: the evaluation harness showed it
+made results *worse* on the current corpus size (5 candidates), so it ships built,
+tested, and off by default rather than deleted or force-enabled.
+Lesson: measuring a feature can produce a "no" as legitimately as a "yes" - and shipping
+that "no" (with the code kept for when the assumption's conditions change) is more
+honest than deleting the evidence or ignoring it.
+
+---
+
+## What I Learned
+
+- **Measurement changes decisions, not just confidence.** The retrieval harness didn't
+  just confirm hybrid search was good - it changed the hybrid weight (`alpha` 0.65 ->
+  0.8), turned reranking off, and turned query rewriting on. Building the eval harness
+  first, before tuning anything, was what made those calls defensible instead of
+  guesses.
+- **Where a security check lives matters as much as whether it exists.** Moving
+  authentication from middleware to a per-route dependency, and moving an ownership
+  check from "read-then-check" into the `UPDATE` statement itself, were both about
+  making the correct behavior the one that's structurally hard to bypass by accident.
+- **"It streams" and "it's fast" are different claims**, and only one of them is a
+  number. Measuring citations-at-0.11s / first-token-at-1.28s (and then measuring what
+  query rewriting costs on top of that) turned a vague performance claim into something
+  a reader can actually evaluate.
+- **A feature that's built and measured-off is more valuable than a feature that's
+  quietly never built.** Keeping reranking in the codebase, tested and configurable,
+  documents a real engineering finding instead of hiding the fact that it was tried.
 
 ---
 
@@ -671,12 +1067,230 @@ Stated plainly, because a README that only lists strengths is not informative:
   rather than object storage.
 - The RAG refusal gate is deliberately lenient; the LLM prompt does the final grounding,
   so a written refusal for off-topic questions requires an API key.
+- No screenshots, GIF, or hosted demo are currently included in this repository.
+- No `LICENSE` file is currently checked into this repository.
 
 ---
 
-## Tech stack
+## Roadmap
 
-Python . FastAPI . Uvicorn . httpx . Pydantic . SQLite (stdlib) . fastembed (bge-small,
-ONNX) . numpy . PyJWT . prometheus-client . vanilla JS/HTML/CSS . Docker .
-GitHub Actions . pytest . ruff . mypy . Groq (Whisper `large-v3-turbo` +
-`openai/gpt-oss-120b`).
+Next up, in order:
+
+**Short term**
+1. Screenshots / a short walkthrough GIF in this README.
+2. A `LICENSE` file, and wiring `require_admin` to an actual admin-only endpoint.
+
+**Medium term**
+3. **Long-audio chunking** with overlap to exceed the 25 MB single-file cap (needs
+   ffmpeg).
+4. Password reset / email verification (needs an email provider).
+
+**Long term**
+5. **Postgres + pgvector + an ANN index**, once the corpus outgrows brute-force cosine,
+   plus Redis so the rate limiter and job queue are shared across processes. Needs
+   Docker or a hosted Postgres to develop against - it is not written blind.
+6. **Speaker diarization** - label "Speaker 1 -> Priya". Deliberately last: the usable
+   options need torch, which would undo the small-footprint story the rest of the
+   project is built on.
+
+**Done:** auth + per-user isolation, background transcription with polling, measured
+retrieval with a CI regression gate, insights dashboard, streamed answers, reranking
+(measured, shipped off), query rewriting (measured, shipped on), editable action items.
+
+---
+
+## Resume Talking Points
+
+- Built a full-stack meeting-intelligence app (FastAPI + SQLite + vanilla JS) with
+  multi-user auth, background job processing, and a retrieval-augmented Q&A feature
+  measured against a hand-labelled evaluation set.
+- Designed and shipped a hybrid (dense + lexical) retrieval pipeline; ran an ablation
+  and alpha sweep that changed the shipped hybrid weight and improved paraphrase
+  recall@3 from 0.875 to 1.000.
+- Built an evaluation harness that A/B-tested two retrieval features (query rewriting,
+  cross-encoder reranking) and shipped one on and one off based on measured results, not
+  intuition.
+- Implemented JWT-based auth with rotating refresh tokens and SQL-level per-user data
+  isolation, closing an IDOR-shaped class of bug by enforcing `user_id` filtering inside
+  every storage query rather than in route handlers.
+- Replaced a synchronous upload-and-process endpoint with a background worker pool and
+  DB-backed status polling, eliminating request timeouts on long recordings and adding
+  crash recovery for interrupted jobs.
+- Implemented Server-Sent Events streaming for LLM answers, with citations arriving
+  before the first token; measured and documented the latency tradeoff of an added
+  query-rewriting step.
+- Added a CI pipeline (GitHub Actions) covering lint, type-checking, a 90% test coverage
+  gate, a retrieval-quality regression gate, dependency auditing, and a Docker build +
+  container smoke test.
+- Wrote 577 tests at 98% coverage with every third-party provider call mocked, so the
+  suite runs fully offline with no API key or network access.
+- Instrumented the app with structured JSON logging (request-id correlated) and
+  Prometheus metrics, with route-template labeling to keep metric cardinality bounded.
+- Built a cross-meeting analytics dashboard entirely from SQL aggregations and inline
+  SVG rendering, with no charting library or analytics service dependency.
+
+---
+
+## Interview Talking Points
+
+### Recruiter questions
+
+1. **What does this project do, in one sentence?**
+   It transcribes meeting audio, produces an editable structured summary, and answers
+   questions across all of a user's meetings with cited sources.
+2. **How long did you work on it, and is it still active?**
+   Framed generically here since the answer is personal - point to the CI badge and
+   commit history on GitHub for current activity.
+3. **What was the hardest part to build?**
+   The retrieval pipeline - not the retrieval itself, but building the evaluation
+   harness that could tell whether a change to it actually helped.
+4. **Did you use AI tools to build this?**
+   The app itself calls an LLM (Groq) for transcription and summarization - that's the
+   product, not a build tool. Speak plainly to whatever tools were actually used while
+   coding.
+5. **Is this deployed anywhere I can see?**
+   Not currently hosted; it runs locally or via Docker in under a couple of minutes (see
+   Getting Started), and offline demo mode needs no API key at all.
+6. **What would you add with one more month?**
+   See the Roadmap section - Postgres/pgvector for scale, Redis for shared rate-limiting
+   state, and speaker diarization, in that order.
+7. **What's the tech stack?**
+   Python/FastAPI backend, SQLite, vanilla JS frontend, Groq for ASR/LLM, Docker +
+   GitHub Actions for CI/CD.
+8. **Is user data secure?**
+   Passwords are hashed (scrypt), sessions use JWTs with revocable refresh tokens, and
+   every database query is filtered by the requesting user - see the Security section.
+9. **Can it handle a real team's meetings?**
+   Yes for the documented scope (single files under 25MB, moderate corpus sizes); the
+   Limitations section is explicit about where it would need work to go further.
+10. **Why is this worth looking at compared to a typical student project?**
+    Because it's measured, not asserted - it has a labelled evaluation set for its
+    hardest feature, a real test suite, CI, and documented tradeoffs rather than a list
+    of claimed features.
+
+### SDE interview questions
+
+1. **Walk me through what happens when a user uploads an audio file.**
+   See [Request Lifecycle](#request-lifecycle): content validation -> `202` response ->
+   background worker transcribes -> summarizes -> chunks and embeds -> status flips to
+   `done`; the client polls `GET /meetings/{id}`.
+2. **How do you prevent one user from seeing another user's meetings?**
+   Every storage function takes `user_id` and filters on it in SQL directly, rather than
+   relying on a route-level check alone - see [Security](#security).
+3. **Why SSE instead of WebSockets for streaming answers?**
+   The traffic is one-directional and short-lived, so SSE stays plain HTTP and inherits
+   the same auth, rate limiting, and error handling as every other endpoint.
+4. **How does hybrid search combine dense and lexical scores?**
+   A weighted combination (`alpha`) of a cosine similarity score from `fastembed`
+   embeddings and a BM25 lexical score, tuned via an alpha sweep in `evaluation/`.
+5. **What happens if the embedding model fails to load?**
+   Retrieval degrades to lexical-only (BM25), which is one reason hybrid was chosen over
+   pure-vector search.
+6. **How do you handle a stolen refresh token?**
+   Refresh tokens rotate on each use - a token is spendable once, so a stolen one stops
+   working the next time the legitimate user refreshes; the token id is stored hashed.
+7. **Why background jobs with a thread pool instead of Celery?**
+   The work is I/O-bound (waiting on the ASR/LLM provider), so threads are the right
+   primitive; a broker adds an operational dependency for no throughput gain at this
+   scale, and the database already serves as the queue of record.
+8. **How is retrieval quality tested, concretely?**
+   A hand-labelled set of 26 questions over 3 overlapping meetings plus 6 off-topic
+   questions, scored for recall/precision/MRR at several k, plus refusal accuracy and
+   false-refusal rate.
+9. **What's the error response contract?**
+   A single JSON envelope (`{"error": {"code", "message", "request_id"}}`) returned by
+   every endpoint, so clients branch on a code instead of parsing prose.
+10. **How would you add a new field to the `action_items` table?**
+    Add a new numbered migration function in `app/storage.py`; the versioned runner
+    applies it once, tracked via `PRAGMA user_version`, so no existing database needs to
+    be manually altered.
+
+### Senior engineer questions
+
+1. **Why did reranking ship disabled despite being implemented?**
+   The evaluation harness measured it making results *worse* on the current 5-chunk
+   corpus, because there's almost nothing to reorder and the cross-encoder's read of a
+   short conversational chunk underperforms the hybrid score it would override. It's
+   kept, tested, and configurable because the result should invert once the corpus is
+   large enough to have genuine near-misses in the retriever's top-20.
+2. **The refusal gate reads the original question, not the rewrite - why does that matter?**
+   A query rewriter adds synonyms; synonyms of an off-topic question can accidentally
+   collide with the corpus, which would let a gate reading the rewrite pass a question
+   that should be refused. The rewrite is allowed to change *ranking*, never *whether
+   there's an answer at all*.
+2b. Related: a test deliberately injects a hostile rewriter to assert the refusal still holds.
+3. **Why is the ownership check inside the `UPDATE ... WHERE` clause rather than a
+   preceding read?**
+   Check-then-write is a race between two concurrent requests; folding the check into
+   the write clause makes the database resolve it atomically instead of application code
+   racing against itself.
+4. **What's the actual bottleneck if this had to scale to 100x the data?**
+   Brute-force cosine similarity in numpy over SQLite BLOBs - it's correct and fast at
+   the measured scale, but the identified path is Postgres + pgvector with an ANN
+   index, which is explicitly why it's on the roadmap rather than pre-optimized before
+   there was a demonstrated need.
+5. **Why is authentication a FastAPI dependency instead of middleware?**
+   Middleware needs a manually maintained list of public paths; the failure mode of that
+   list drifting is a quietly unauthenticated endpoint. As a dependency, a route is
+   protected exactly when its signature says so - visible in code review and in `/docs`.
+6. **How do you decide when a measured "no" (like reranking) is worth keeping in the
+   codebase versus deleting?**
+   Keep it when the underlying assumption (joint scoring beats independent embeddings)
+   is still plausible and the negative result is explainable by a specific, checkable
+   condition (corpus too small) that could change - otherwise it's dead code pretending
+   to be a feature.
+7. **Why is `summary_json` never rewritten when a human edits an action item?**
+   It's kept as the immutable record of what the model actually extracted, distinct from
+   the mutable `action_items` workflow state, so "what did the model say" and "what did
+   we decide" stay separately auditable - important for trusting or debugging AI output.
+8. **What would break first under concurrent write load, and why?**
+   SQLite's single-writer model - concurrent `POST /meetings` from many users could
+   serialize on writes. It's an accepted, documented tradeoff at current scope, with
+   Postgres identified as the fix rather than something WAL-mode tuning alone would fully
+   solve at high concurrency.
+9. **Why keep the lexical (BM25) half of hybrid retrieval when the alpha sweep shows
+   dense-only scoring just as well or better on this eval set?**
+   26 questions over 5 chunks is too small a sample to justify removing a retrieval
+   component, and BM25 does a job the eval metric doesn't capture: it's the fallback
+   when embeddings fail to load, and it matches exact tokens (names, ids, error codes)
+   that embeddings blur together.
+10. **If you were handed this codebase to extend, what would you check first?**
+    Whether the retrieval eval set still reflects real usage patterns before trusting
+    any of the shipped configuration choices, since all of them (alpha, rewrite,
+    rerank) were tuned against a 26-question synthetic set that the README is explicit
+    about being small.
+
+---
+
+## Contributing
+
+There is currently no `CONTRIBUTING.md` in this repository. In the meantime:
+
+1. Fork and clone the repo, then follow [Getting Started](#getting-started).
+2. Install dev dependencies and the pre-commit hook so local checks match CI:
+   ```bash
+   pip install -r requirements-dev.txt
+   pre-commit install
+   ```
+3. Run `pytest`, `ruff check .`, `ruff format .`, and `mypy` before opening a PR - these
+   are exactly what CI runs (see [Testing](#testing)).
+4. If a change touches retrieval behavior, run `python -m evaluation.run` and include
+   the before/after numbers in the PR description.
+
+---
+
+## License
+
+No `LICENSE` file is currently included in this repository, so no license terms are
+granted to third parties by default. If you intend for this project to be used,
+modified, or redistributed by others, add a `LICENSE` file (e.g. MIT, Apache-2.0)
+before relying on that.
+
+---
+
+## Contact
+
+- **GitHub:** [github.com/R1tulD3v](https://github.com/R1tulD3v)
+- **LinkedIn:** _add your profile link here_
+- **Portfolio:** _add your portfolio link here_
+- **Email:** _add a contact email here_
