@@ -3,7 +3,7 @@ services:
     name: meetsaransh
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerContext: .
+    dockerContext: ./
     plan: starter
     healthCheckPath: /api/v1/health
     disk:
